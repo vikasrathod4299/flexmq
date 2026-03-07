@@ -66,9 +66,9 @@ describe('End-to-End Integration', () => {
     const job = await queue.add({ id: 1 }, { maxAttempts: 3 });
 
     const storage = queue.getStorage();
-    await storage.dequeue(0);
+    await storage.dequeue('recovery-test', 0);
 
-    const processingJobs = await storage.getProcessingJobs();
+    const processingJobs = await storage.getProcessingJobs('recovery-test');
     expect(processingJobs).toContain(job.id);
 
     const processedJobs: number[] = [];

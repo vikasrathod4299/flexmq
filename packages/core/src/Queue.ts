@@ -66,7 +66,7 @@ export class Queue<T> extends EventEmitter {
             error: null,
         };
 
-        const added = await this.storage.enqueue(job);
+        const added = await this.storage.enqueue(this.queueName, job);
 
         if (added) {
             this.emit('job:added', job);
@@ -118,21 +118,21 @@ export class Queue<T> extends EventEmitter {
         this.enqueueLock = true;
 
         try {
-            const still_full = await this.storage.isFull();
+            const still_full = await this.storage.isFull(this.queueName);
             if(!still_full) {
-                const added = await this.storage.enqueue(job);
+                const added = await this.storage.enqueue(this.queueName, job);
                 if(added) {
                     this.emit('job:added', job);
                     return job;
                 }
             }
-            const oldestJob = await this.storage.dequeue(0);
+            const oldestJob = await this.storage.dequeue(this.queueName, 0);
             if(!oldestJob) {
                 // No pending jobs to drop (all are processing), can't apply DROP_OLDEST
                 this.emit('job:dropped', { job, reason: "DROP_OLDEST_FAILED" });
                 throw new Error('Queue is full. No pending jobs to drop (all jobs are processing).');
             }
-            const added = await this.storage.enqueue(job);
+            const added = await this.storage.enqueue(this.queueName, job);
 
             if(added) {
                 this.emit('job:dropped', { job: oldestJob, reason: "DROP_OLDEST" });
@@ -141,7 +141,7 @@ export class Queue<T> extends EventEmitter {
             }
 
             // Re-enqueue the dropped job so we don't lose it silently.
-            await this.storage.enqueue(oldestJob);
+            await this.storage.enqueue(this.queueName, oldestJob);
             throw new Error('Queue is full. Failed to enqueue new job even after dropping oldest job.');
         } finally {
             this.enqueueLock = false;
@@ -158,7 +158,7 @@ export class Queue<T> extends EventEmitter {
         this.drainingProducers = true;
 
         if (this.waitingProducers.length === 0) return;
-        if (await this.storage.isFull()) return;
+        if (await this.storage.isFull(this.queueName)) return;
 
         const waiter = this.waitingProducers.shift()!;
 
@@ -178,11 +178,11 @@ export class Queue<T> extends EventEmitter {
     }
 
     async getJob(jobId: string): Promise<Job<T> | null> {
-        return this.storage.getJob(jobId);
+        return this.storage.getJob(this.queueName, jobId);
     }
 
     async getSize(): Promise<number> {
-        return this.storage.size();
+        return this.storage.size(this.queueName);
     }
 
     getName(): string {

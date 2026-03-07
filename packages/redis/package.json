@@ -1,6 +1,6 @@
 {
     "name": "@flexmq/redis",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Redis storage adapter for flexmq job queue",
     "author": "Vikas Rathod",
     "license": "MIT",
@@ -32,7 +32,7 @@
         "access": "public"
     },
     "files": [
-        "dist" 
+        "dist"
     ],
     "engines": {
         "node": ">=16.0.0"
@@ -42,15 +42,14 @@
         "clean": "rm -rf dist",
         "prepublishOnly": "npm run build"
     },
-
-    "dependencies": {
-        "flexmq": "^0.1.0"
-    },
     "peerDependencies": {
         "ioredis": "^5.0.0"
     },
     "devDependencies": {
-        "ioredis": "^5.9.2",
-        "@types/ioredis": "^4.28.10"
+        "@types/ioredis": "^4.28.10",
+        "ioredis": "^5.9.2"
+    },
+    "dependencies": {
+        "flexmq": "^0.1.1"
     }
 }

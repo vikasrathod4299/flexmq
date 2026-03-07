@@ -33,7 +33,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         this.waitingConsumers = [];
     }
 
-    async enqueue(job: Job<T>): Promise<boolean> {
+    async enqueue(_queueName: string, job: Job<T>): Promise<boolean> {
         const now = Date.now();
         job.createdAt = now;
         job.updatedAt = now;
@@ -66,7 +66,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         return true;
     }
 
-    async dequeue(timeout: number = 5): Promise<Job<T> | null> {
+    async dequeue(queueName: string, timeout: number = 5): Promise<Job<T> | null> {
         const now = Date.now();
 
         if (this.queue.length > 0) {
@@ -74,7 +74,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
             const job = this.jobs.get(jobId)!;
 
             if(!job) {
-                return this.dequeue(timeout);
+                return this.dequeue(queueName, timeout);
             }
 
             job.status = "processing";
@@ -110,7 +110,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         });
     }
 
-    async peek(): Promise<Job<T> | null> {
+    async peek(_queueName: string): Promise<Job<T> | null> {
         if(this.queue.length === 0) {
             return null;
         }
@@ -118,19 +118,19 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         return this.jobs.get(jobId) || null;
     }
 
-    async size(): Promise<number> {
+    async size(queueName: string): Promise<number> {
         return this.queue.length;
     }
 
-    async isFull(): Promise<boolean> {
+    async isFull(queueName: string): Promise<boolean> {
         return this.queue.length >= this.capacity;
     }
 
-    async isEmpty(): Promise<boolean> {
+    async isEmpty(queueName: string): Promise<boolean> {
         return this.queue.length === 0;
     }
 
-    async scheduleDelayed(job: Job<T>, executeAt: number): Promise<void> {
+    async scheduleDelayed(_queueName: string, job: Job<T>, executeAt: number): Promise<void> {
         const now = Date.now();
 
         job.status = 'pending';
@@ -144,7 +144,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         this.jobs.set(job.id, job);
     }
 
-    async promoteDelayedJobs(): Promise<number> {
+    async promoteDelayedJobs(_queueName: string): Promise<number> {
        const now = Date.now(); 
        let promoted = 0;
 
@@ -177,7 +177,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
        return promoted;
     }
 
-    async markProcessing(jobId: string, workerId: string): Promise<void> {
+    async markProcessing(_queueName: string, jobId: string, workerId: string): Promise<void> {
         const now = Date.now();
         const job = this.jobs.get(jobId);
 
@@ -191,7 +191,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         this.processingJobs.set(jobId, now);
     }
 
-    async markCompleted(jobId: string): Promise<void> {
+    async markCompleted(_queueName: string, jobId: string): Promise<void> {
         const now = Date.now();
         const job = this.jobs.get(jobId);
 
@@ -204,7 +204,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         this.processingJobs.delete(jobId);
     }
 
-    async markFailed(jobId: string, error?: string): Promise<void> {
+    async markFailed(_queueName: string, jobId: string, error?: string): Promise<void> {
         const now = Date.now();
         const job = this.jobs.get(jobId);
         
@@ -218,11 +218,11 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         this.processingJobs.delete(jobId);
     }
 
-    async getJob(jobId: string): Promise<Job<T> | null> {
+    async getJob(_queueName: string, jobId: string): Promise<Job<T> | null> {
         return this.jobs.get(jobId) || null;
     }
 
-    async updateJob(job: Job<T>): Promise<void> {
+    async updateJob(_queueName: string, job: Job<T>): Promise<void> {
         job.updatedAt = Date.now();
         this.jobs.set(job.id, job);
 
@@ -231,7 +231,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         }
     }
 
-    async recoverStuckJobs(timeoutMs: number): Promise<number> {
+    async recoverStuckJobs(_queueName: string, timeoutMs: number): Promise<number> {
         const now = Date.now();
         let recovered = 0;
 
@@ -257,7 +257,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         return recovered;
     }
 
-    async getProcessingJobs(): Promise<string[]> {
+    async getProcessingJobs(_queueName: string): Promise<string[]> {
         return Array.from(this.processingJobs.keys());
     }
 

@@ -6,27 +6,26 @@ export interface StorageAdapter<T> {
     disconnect(): Promise<void>;
 
     // Queue operations
-    enqueue(job: Job<T>): Promise<boolean>;
-    dequeue(timeout?: number): Promise<Job<T> | null>;
-    peek(): Promise<Job<T> | null>;
-    size(): Promise<number>;
-    isFull(): Promise<boolean>;
-    isEmpty(): Promise<boolean>;
+    enqueue(queueName: string, job: Job<T>): Promise<boolean>;
+    dequeue(queueName: string, timeout?: number): Promise<Job<T> | null>;
+    peek(queueName: string): Promise<Job<T> | null>;
+    size(queueName: string): Promise<number>;
+    isFull(queueName: string): Promise<boolean>;
+    isEmpty(queueName: string): Promise<boolean>;
 
     // Delayed job operations
-    scheduleDelayed(job: Job<T>, executeAt: number): Promise<void>;
-    promoteDelayedJobs(): Promise<number>;
+    scheduleDelayed(queueName: string, job: Job<T>, executeAt: number): Promise<void>;
+    promoteDelayedJobs(queueName: string): Promise<number>;
 
     // Job lifecycle
-    markProcessing(jobId: string, workerId: string): Promise<void>;
-    markCompleted(jobId: string): Promise<void>;
-    markFailed(jobId: string, error?: string): Promise<void>;
-
+    markProcessing(queueName: string, jobId: string, workerId: string): Promise<void>;
+    markCompleted(queueName: string, jobId: string): Promise<void>;
+    markFailed(queueName: string, jobId: string, error?: string): Promise<void>;
     // Job data access
-    getJob(jobId: string): Promise<Job<T> | null>;
-    updateJob(job: Job<T>): Promise<void>;
+    getJob(queueName: string, jobId: string): Promise<Job<T> | null>;
+    updateJob(queueName: string, job: Job<T>): Promise<void>;
 
     // Recovery
-    recoverStuckJobs(timeoutMs: number): Promise<number>;
-    getProcessingJobs(): Promise<string[]>;
+    recoverStuckJobs(queueName: string, timeoutMs: number): Promise<number>;
+    getProcessingJobs(queueName: string): Promise<string[]>;
 }

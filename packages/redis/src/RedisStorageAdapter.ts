@@ -1,6 +1,6 @@
-import Redis from "ioredis";
 import { Job, StorageAdapter } from "flexmq";
 import { RedisConfig } from "./RedisConfig";
+import Redis from "ioredis";
 import path from "path";
 import fs from "fs";
 
@@ -35,17 +35,17 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
     );
 
 
-    private get pendingKey(): string {
-        return `${this.config.queueName}:pending`;
+    private pendingKey(queueName: string): string {
+        return `${queueName}:pending`;
     }
-    private get processingKey(): string {
-        return `${this.config.queueName}:processing`;
+    private processingKey(queueName: string): string {
+        return `${queueName}:processing`;
     }
-    private get delayedKey(): string {
-        return `${this.config.queueName}:delayed`;
+    private delayedKey(queueName: string): string {
+        return `${queueName}:delayed`;
     }
-    private jobKey(id: string): string {
-        return `${this.config.queueName}:job:${id}`;
+    private jobKey(queueName:string, id: string): string {
+        return `${queueName}:job:${id}`;
     }
 
     async connect(): Promise<void> {
@@ -58,7 +58,7 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
         await this.blockingClient.quit();
     }
 
-    async enqueue(job: Job<T>): Promise<boolean> {
+    async enqueue(queueName:string,job: Job<T>): Promise<boolean> {
         const now = Date.now();
         job.createdAt = job.createdAt || now;
         job.updatedAt = now;
@@ -67,15 +67,15 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
 
         const result = await this.client.eval(
             this.enqueueLua, 2,
-            this.pendingKey, this.jobKey(job.id),
+            this.pendingKey(queueName), this.jobKey(queueName,job.id),
             this.config.capacity.toString(), job.id, jobData,
         ) as number;
 
         return result === 1;
     }
 
-    async dequeue(timeout: number = 5): Promise<Job<T> | null> {
-        const result = await this.blockingClient.brpop(this.pendingKey, timeout);
+    async dequeue(queueName: string, timeout: number = 5): Promise<Job<T> | null> {
+        const result = await this.blockingClient.brpop(this.pendingKey(queueName), timeout);
         if (!result) return null;
 
         const [, jobId] = result;
@@ -83,7 +83,7 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
 
         const jobData = await this.client.eval(
             this.acquireJobLua, 2,
-            this.processingKey, this.jobKey(jobId),
+            this.processingKey(queueName), this.jobKey(queueName, jobId),
             now.toString(), jobId,
         ) as string | null;
 
@@ -110,41 +110,41 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
         };
     }
 
-    async peek(): Promise<Job<T> | null> {
-        const jobId = await this.client.lindex(this.pendingKey, 0);
+    async peek(queueName:string): Promise<Job<T> | null> {
+        const jobId = await this.client.lindex(this.pendingKey(queueName), 0);
         if (!jobId) return null;
-        return this.getJob(jobId);
+        return this.getJob(queueName, jobId);
     }
 
-    async size(): Promise<number> {
-        return await this.client.llen(this.pendingKey);
+    async size(queueName: string): Promise<number> {
+        return await this.client.llen(this.pendingKey(queueName));
     }
 
-    async isFull(): Promise<boolean> {
-        return (await this.size()) >= this.config.capacity;
+    async isFull(queueName: string): Promise<boolean> {
+        return (await this.size(queueName)) >= this.config.capacity;
     }
 
-    async isEmpty(): Promise<boolean> {
-        return (await this.size()) === 0;
+    async isEmpty(queueName: string): Promise<boolean> {
+        return (await this.size(queueName)) === 0;
     }
 
-    async scheduleDelayed(job: Job<T>, executeAt: number): Promise<void> {
+    async scheduleDelayed(queueName: string,job: Job<T>, executeAt: number): Promise<void> {
         job.updatedAt = Date.now();
         job.nextAttemptAt = new Date(executeAt);
 
         await this.client.multi()
-            .hset(this.jobKey(job.id),
+            .hset(this.jobKey(queueName,job.id),
                 'updatedAt', job.updatedAt.toString(),
                 'nextAttemptAt', executeAt.toString(),
             )
-            .zadd(this.delayedKey, executeAt, job.id)
+            .zadd(this.delayedKey(queueName), executeAt, job.id)
             .exec();
     }
 
-    async markProcessing(jobId: string, workerId: string): Promise<void> {
+    async markProcessing(queueName: string, jobId: string, workerId: string): Promise<void> {
         const now = Date.now();
-        await this.client.zadd(this.processingKey, now, jobId);
-        await this.client.hset(this.jobKey(jobId),
+        await this.client.zadd(this.processingKey(queueName), now, jobId);
+        await this.client.hset(this.jobKey(queueName,jobId),
             'status', 'processing',
             'processingStartedAt', now.toString(),
             'workerId', workerId,
@@ -152,24 +152,24 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
         );
     }
 
-    async markCompleted(jobId: string): Promise<void> {
+    async markCompleted(queueName: string, jobId: string): Promise<void> {
         const now = Date.now();
         await this.client.multi()
-            .zrem(this.processingKey, jobId)
-            .hset(this.jobKey(jobId),
+            .zrem(this.processingKey(queueName), jobId)
+            .hset(this.jobKey(queueName,jobId),
                 'status', 'completed',
                 'processingStartedAt', '',
                 'updatedAt', now.toString(),
             )
-            .expire(this.jobKey(jobId), 86400)
+            .expire(this.jobKey(queueName, jobId), 86400)
             .exec();
     }
 
-    async markFailed(jobId: string, error: string = ''): Promise<void> {
+    async markFailed(queueName: string,jobId: string, error: string = ''): Promise<void> {
         const now = Date.now();
         await this.client.multi()
-            .zrem(this.processingKey, jobId)
-            .hset(this.jobKey(jobId),
+            .zrem(this.processingKey(queueName), jobId)
+            .hset(this.jobKey(queueName,jobId),
                 'status', 'failed',
                 'processingStartedAt', '',
                 'error', error || '',
@@ -178,27 +178,27 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
             .exec();
     }
 
-    async promoteDelayedJobs(): Promise<number> {
+    async promoteDelayedJobs(queueName: string): Promise<number> {
         const now = Date.now();
         return await this.client.eval(
             this.promoteDelayedLua, 2,
-            this.delayedKey, this.pendingKey,
-            `${this.config.queueName}:job:`, now,
+            this.delayedKey(queueName), this.pendingKey(queueName),
+            `${queueName}:job:`, now,
         ) as number;
     }
 
-    async recoverStuckJobs(timeoutMs: number): Promise<number> {
+    async recoverStuckJobs(queueName: string,timeoutMs: number): Promise<number> {
         const now = Date.now();
         return await this.client.eval(
             this.recoverStuckJobsLua, 2,
-            this.processingKey, this.pendingKey,
-            `${this.config.queueName}:job:`, now, timeoutMs,
+            this.processingKey(queueName), this.pendingKey(queueName),
+            `${queueName}:job:`, now, timeoutMs,
         ) as number;
     }
 
-    async updateJob(job: Job<T>): Promise<void> {
+    async updateJob(queueName:string ,job: Job<T>): Promise<void> {
         job.updatedAt = Date.now();
-        await this.client.hset(this.jobKey(job.id),
+        await this.client.hset(this.jobKey(queueName,job.id),
             'payload', JSON.stringify(job.payload),
             'attempts', job.attempts.toString(),
             'maxAttempts', job.maxAttempts.toString(),
@@ -209,12 +209,12 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
         );
     }
 
-    async getJob(jobId: string): Promise<Job<T> | null> {
-        const data = await this.client.hgetall(this.jobKey(jobId));
+    async getJob(queueName:string,jobId: string): Promise<Job<T> | null> {
+        const data = await this.client.hgetall(this.jobKey(queueName,jobId));
         return this.parseJobFromRedis(data);
     }
 
-    async getProcessingJobs(): Promise<string[]> {
-        return this.client.zrange(this.processingKey, 0, -1);
+    async getProcessingJobs(queueName: string): Promise<string[]> {
+        return this.client.zrange(this.processingKey(queueName), 0, -1);
     }
 }

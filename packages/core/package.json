@@ -1,6 +1,6 @@
 {
     "name": "flexmq",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Lightweight job queue with pluggable storage - memory or Redis, Postgres. Same  API, swap backends.",
     "author": "Vikas Rathod",
     "license": "MIT",
@@ -26,7 +26,7 @@
     ],
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
-    "exports" : {
+    "exports": {
         ".": {
             "types": "./dist/index.d.ts",
             "require": "./dist/index.js"
@@ -36,8 +36,7 @@
         "dist",
         "README.md"
     ],
-
-    "engines" : {
+    "engines": {
         "node": ">=16.0.0"
     },
     "scripts": {
