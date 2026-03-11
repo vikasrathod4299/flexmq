@@ -8,6 +8,7 @@ The project is organized as a monorepo with two packages:
 - `@flexmq/redis` — Redis storage adapter for production-style deployments
 
 It is designed for:
+
 - background job processing
 - retry with exponential backoff
 - configurable backpressure behavior
@@ -19,6 +20,7 @@ It is designed for:
 ### `flexmq` (core)
 
 Main primitives:
+
 - `Queue<T>`
 - `Worker<T>`
 - `StorageAdapter<T>`
@@ -55,13 +57,13 @@ npm test
 ## Quick start (in-memory)
 
 ```ts
-import { Queue, Worker } from 'flexmq';
+import { Queue, Worker } from "flexmq";
 
 type EmailJob = { to: string; subject: string };
 
-const queue = new Queue<EmailJob>('emails', { capacity: 1000 });
+const queue = new Queue<EmailJob>("emails", { capacity: 1000 });
 
-const worker = new Worker<EmailJob>('emails', {
+const worker = new Worker<EmailJob>("emails", {
   concurrency: 2,
   processor: async (job) => {
     // your job logic
@@ -72,8 +74,8 @@ const worker = new Worker<EmailJob>('emails', {
 async function main() {
   await queue.connect();
 
-  await queue.add({ to: 'user@example.com', subject: 'Welcome' }, { maxAttempts: 3 });
-  await queue.add({ to: 'ops@example.com', subject: 'Daily report' }, { maxAttempts: 5 });
+  await queue.add({ to: "user@example.com", subject: "Welcome" }, { maxAttempts: 3 });
+  await queue.add({ to: "ops@example.com", subject: "Daily report" }, { maxAttempts: 5 });
 
   await worker.start();
 
@@ -99,9 +101,9 @@ When queue capacity is reached, choose behavior via `backpressureStrategy`:
 Example:
 
 ```ts
-import { Queue, BackpressureStrategy } from 'flexmq';
+import { Queue, BackpressureStrategy } from "flexmq";
 
-const queue = new Queue('events', {
+const queue = new Queue("events", {
   capacity: 500,
   backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
 });
@@ -120,24 +122,24 @@ const queue = new Queue('events', {
 ## Redis adapter example
 
 ```ts
-import { Queue, Worker } from 'flexmq';
-import { RedisStorageAdapter } from '@flexmq/redis';
+import { Queue, Worker } from "flexmq";
+import { RedisStorageAdapter } from "@flexmq/redis";
 
 type JobPayload = { taskId: string };
 
 const storage = new RedisStorageAdapter<JobPayload>({
-  host: '127.0.0.1',
+  host: "127.0.0.1",
   port: 6379,
-  queueName: 'tasks',
+  queueName: "tasks",
   capacity: 10000,
 });
 
-const queue = new Queue<JobPayload>('tasks', { storage });
-const worker = new Worker<JobPayload>('tasks', {
+const queue = new Queue<JobPayload>("tasks", { storage });
+const worker = new Worker<JobPayload>("tasks", {
   storage,
   concurrency: 4,
   processor: async (job) => {
-    console.log('Processing', job.payload.taskId);
+    console.log("Processing", job.payload.taskId);
   },
 });
 ```
@@ -147,12 +149,14 @@ const worker = new Worker<JobPayload>('tasks', {
 ## Events
 
 Queue emits:
+
 - `queue:connected`
 - `queue:disconnected`
 - `job:added`
 - `job:dropped`
 
 Worker emits:
+
 - `worker:started`
 - `worker:stopped`
 - `job:processing`

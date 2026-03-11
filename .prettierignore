@@ -1,0 +1,7 @@
+coverage
+dist
+**/dist
+**/node_modules
+packages/redis/src/lua-scripts
+package-lock.json
+tests/package-lock.json

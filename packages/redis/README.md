@@ -51,7 +51,6 @@ async function main() {
   await queue.add({ message: "Password reset" }, { maxAttempts: 5 });
 
   await worker.start();
-
 }
 
 main().catch(console.error);

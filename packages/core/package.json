@@ -1,47 +1,47 @@
 {
-    "name": "flexmq",
-    "version": "0.1.1",
-    "description": "Lightweight job queue with pluggable storage - memory or Redis, Postgres. Same  API, swap backends.",
-    "author": "Vikas Rathod",
-    "license": "MIT",
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/vikasrathod4299/flexmq.git",
-        "directory": "packages/core"
-    },
-    "bugs": {
-        "url": "https://github.com/vikasrathod4299/flexmq/issues"
-    },
-    "homepage": "https://github.com/vikasrathod4299/flexmq#readme",
-    "keywords": [
-        "job-queue",
-        "task-queue",
-        "async-queue",
-        "backpressure",
-        "redis",
-        "postgres",
-        "worker",
-        "in-memory-queue",
-        "lightweight"
-    ],
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
-    "exports": {
-        ".": {
-            "types": "./dist/index.d.ts",
-            "require": "./dist/index.js"
-        }
-    },
-    "files": [
-        "dist",
-        "README.md"
-    ],
-    "engines": {
-        "node": ">=16.0.0"
-    },
-    "scripts": {
-        "build": "tsc",
-        "clean": "rm -rf dist",
-        "prepublishOnly": "npm run build"
+  "name": "flexmq",
+  "version": "0.1.1",
+  "description": "Lightweight job queue with pluggable storage - memory or Redis, Postgres. Same  API, swap backends.",
+  "author": "Vikas Rathod",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vikasrathod4299/flexmq.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/vikasrathod4299/flexmq/issues"
+  },
+  "homepage": "https://github.com/vikasrathod4299/flexmq#readme",
+  "keywords": [
+    "job-queue",
+    "task-queue",
+    "async-queue",
+    "backpressure",
+    "redis",
+    "postgres",
+    "worker",
+    "in-memory-queue",
+    "lightweight"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
     }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  }
 }

@@ -26,57 +26,57 @@ export interface MetricsSnapshot {
 }
 
 export class Metrics {
-  private jobsAdded: number = 0
-  private jobsCompleted: number = 0
-  private jobsFailed: number = 0
-  private jobsDropped: number = 0
-  private totalRetries: number = 0
-  
-  private queueSize: number = 0
-  private activeWorkers: number = 0
-  private idleWorkers: number = 0
+  private jobsAdded: number = 0;
+  private jobsCompleted: number = 0;
+  private jobsFailed: number = 0;
+  private jobsDropped: number = 0;
+  private totalRetries: number = 0;
+
+  private queueSize: number = 0;
+  private activeWorkers: number = 0;
+  private idleWorkers: number = 0;
 
   private readonly maxSamples: number = 1000;
-  private processingTimes: number[] = []
-  private processingTimeIndex : number = 0;
+  private processingTimes: number[] = [];
+  private processingTimeIndex: number = 0;
 
   private totalProcessingTime: number = 0;
   private processedCount: number = 0;
   private maxProcessingTime: number = 0;
   private minProcessingTime: number = Infinity;
-  
+
   private readonly startTime: number = Date.now();
   private lastThroughputCheck: number = Date.now();
   private jobsSinceLastCheck: number = 0;
   private currentThroughput: number = 0;
 
   incrementJobsAdded(): void {
-    this.jobsAdded++
+    this.jobsAdded++;
   }
-  
+
   incrementJobsCompleted(): void {
     this.jobsCompleted++;
     this.jobsSinceLastCheck++;
     this.updateThroughput();
   }
-  
+
   incrementJobsFailed(): void {
-    this.jobsFailed++
+    this.jobsFailed++;
   }
-  
+
   incrementJobsDropped(): void {
-    this.jobsDropped++
+    this.jobsDropped++;
   }
 
   incrementRetries(): void {
-    this.totalRetries++
+    this.totalRetries++;
   }
-  
+
   recordProcessingTime(durationMs: number): void {
-    if(this.processingTimes.length >= this.maxSamples) {
+    if (this.processingTimes.length >= this.maxSamples) {
       this.processingTimes.shift();
     }
-    this.processingTimes.push(durationMs)
+    this.processingTimes.push(durationMs);
 
     this.totalProcessingTime += durationMs;
     this.processedCount++;
@@ -85,17 +85,17 @@ export class Metrics {
   }
 
   updateQueueSize(size: number): void {
-    this.queueSize = size
+    this.queueSize = size;
   }
-  
+
   updateWorkerStats(active: number, idle: number): void {
-    this.activeWorkers = active
-    this.idleWorkers = idle
+    this.activeWorkers = active;
+    this.idleWorkers = idle;
   }
 
   updateThroughput(): void {
     const now = Date.now();
-    const elapsed = now - this.lastThroughputCheck
+    const elapsed = now - this.lastThroughputCheck;
 
     if (elapsed >= 1000) {
       this.currentThroughput = (this.jobsSinceLastCheck / elapsed) * 1000;
@@ -104,7 +104,7 @@ export class Metrics {
     }
   }
 
-  calculatePercentile(percentile: number) : number {
+  calculatePercentile(percentile: number): number {
     if (this.processingTimes.length === 0) return 0;
 
     const sorted = [...this.processingTimes].sort((a, b) => a - b);
@@ -112,7 +112,7 @@ export class Metrics {
     return sorted[index];
   }
 
-  getSnapshot(): MetricsSnapshot {  
+  getSnapshot(): MetricsSnapshot {
     const totaljobs = this.jobsCompleted + this.jobsFailed;
 
     return {
@@ -126,7 +126,8 @@ export class Metrics {
       activeWorkers: this.activeWorkers,
       idleWorkers: this.idleWorkers,
 
-      avgProcessingTime: this.processedCount > 0 ? this.totalProcessingTime / this.processedCount : 0,
+      avgProcessingTime:
+        this.processedCount > 0 ? this.totalProcessingTime / this.processedCount : 0,
       maxProcessingTime: this.maxProcessingTime,
       minProcessingTime: this.minProcessingTime === Infinity ? 0 : this.minProcessingTime,
 
@@ -139,22 +140,22 @@ export class Metrics {
       successRate: totaljobs > 0 ? (this.jobsCompleted / totaljobs) * 100 : 0,
       errorRate: totaljobs > 0 ? (this.jobsFailed / totaljobs) * 100 : 0,
 
-      uptimeMs: Date.now() - this.startTime
-    }
+      uptimeMs: Date.now() - this.startTime,
+    };
   }
 
   reset(): void {
-    this.jobsAdded = 0
-    this.jobsCompleted = 0
-    this.jobsFailed = 0
-    this.jobsDropped = 0
-    this.totalRetries = 0
-    
-    this.queueSize = 0
-    this.activeWorkers = 0
-    this.idleWorkers = 0
+    this.jobsAdded = 0;
+    this.jobsCompleted = 0;
+    this.jobsFailed = 0;
+    this.jobsDropped = 0;
+    this.totalRetries = 0;
 
-    this.processingTimes = []
+    this.queueSize = 0;
+    this.activeWorkers = 0;
+    this.idleWorkers = 0;
+
+    this.processingTimes = [];
     this.processingTimeIndex = 0;
 
     this.totalProcessingTime = 0;
