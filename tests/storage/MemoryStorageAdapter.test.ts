@@ -1,6 +1,15 @@
 import type { Job } from "flexmq";
 import { MemoryStorageAdapter } from "flexmq";
 
+type MemoryStorageInternals = {
+  queue: string[];
+  delayedJobs: Map<string, number>;
+  processingJobs: Map<string, number>;
+};
+
+const getStorageInternals = <T>(value: MemoryStorageAdapter<T>): MemoryStorageInternals =>
+  value as unknown as MemoryStorageInternals;
+
 describe("MemoryStorageAdapter", () => {
   let storage: MemoryStorageAdapter<{ data: string }>;
 
@@ -114,7 +123,7 @@ describe("MemoryStorageAdapter", () => {
 
         it("should skip missing queued job ids and continue dequeueing", async () => {
             await storage.enqueue("test-queue", createJob("job-1"));
-            (storage as any).queue.unshift("missing-job");
+          getStorageInternals(storage).queue.unshift("missing-job");
 
             const job = await storage.dequeue("test-queue", 0);
 
@@ -128,7 +137,7 @@ describe("MemoryStorageAdapter", () => {
         });
 
         it("should return null when queued job data is missing", async () => {
-            (storage as any).queue.push("missing-job");
+          getStorageInternals(storage).queue.push("missing-job");
 
             await expect(storage.peek("test-queue")).resolves.toBeNull();
         });
@@ -189,7 +198,7 @@ describe("MemoryStorageAdapter", () => {
         });
 
         it("should skip delayed jobs whose payload record is missing", async () => {
-            (storage as any).delayedJobs.set("ghost-job", Date.now() - 10);
+          getStorageInternals(storage).delayedJobs.set("ghost-job", Date.now() - 10);
 
             const promoted = await storage.promoteDelayedJobs("test-queue");
 
@@ -258,8 +267,8 @@ describe("MemoryStorageAdapter", () => {
             const stuckJob = createJob("job-1");
             await storage.enqueue("test-queue", stuckJob);
             await storage.markProcessing("test-queue", "job-1", "worker-1");
-            (storage as any).processingJobs.set("ghost-job", Date.now() - 5000);
-            (storage as any).processingJobs.set("job-1", Date.now() - 5000);
+          getStorageInternals(storage).processingJobs.set("ghost-job", Date.now() - 5000);
+          getStorageInternals(storage).processingJobs.set("job-1", Date.now() - 5000);
 
             const recovered = await storage.recoverStuckJobs("test-queue", 1000);
             const recoveredJob = await storage.dequeue("test-queue", 0);

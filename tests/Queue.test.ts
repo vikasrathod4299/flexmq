@@ -4,10 +4,28 @@ import {
   clearMemoryStorageRegistry,
   type StorageAdapter,
   type Job,
-  MemoryStorageAdapter,
+  type MemoryStorageAdapter,
 } from "flexmq";
 
-const createJob = (id: string, email: string): Job<{ email: string }> => ({
+type QueuePayload = { email: string };
+type QueueJob = Job<QueuePayload>;
+type QueueInternals = {
+  enqueueLock: boolean;
+  dropOldestAndEnqueue: (job: QueueJob) => Promise<QueueJob>;
+  drainWaitingProducers: () => Promise<void>;
+  waitingProducers: Array<{
+    payload: QueuePayload;
+    options: { maxAttempts?: number };
+    resolve: (job: QueueJob) => void;
+    reject: (error: Error) => void;
+  }>;
+  backpressureStrategy: BackpressureStrategy | "UNKNOWN_STRATEGY";
+  add: (payload: QueuePayload, options?: { maxAttempts?: number }) => Promise<QueueJob>;
+};
+
+const getQueueInternals = (value: Queue<QueuePayload>): QueueInternals => value as unknown as QueueInternals;
+
+const createJob = (id: string, email: string): QueueJob => ({
   id,
   payload: { email },
   attempts: 0,
@@ -17,7 +35,7 @@ const createJob = (id: string, email: string): Job<{ email: string }> => ({
   error: null,
 });
 
-const createMockStorage = (): jest.Mocked<StorageAdapter<{ email: string }>> => ({
+const createMockStorage = (): jest.Mocked<StorageAdapter<QueuePayload>> => ({
   connect: jest.fn().mockResolvedValue(undefined),
   disconnect: jest.fn().mockResolvedValue(undefined),
   enqueue: jest.fn().mockResolvedValue(true),
@@ -38,7 +56,7 @@ const createMockStorage = (): jest.Mocked<StorageAdapter<{ email: string }>> => 
 });
 
 describe("Queue", () => {
-  let queue: Queue<{ email: string }>;
+  let queue: Queue<QueuePayload>;
 
   beforeEach(() => {
     clearMemoryStorageRegistry();
@@ -93,8 +111,8 @@ describe("Queue", () => {
       await queue.disconnect();
       await queue.disconnect();
 
-      expect(storage.connect).toHaveBeenCalledTimes(1);
-      expect(storage.disconnect).toHaveBeenCalledTimes(1);
+      expect(storage.connect.mock.calls).toHaveLength(1);
+      expect(storage.disconnect.mock.calls).toHaveLength(1);
       expect(connectedHandler).toHaveBeenCalledTimes(1);
       expect(disconnectedHandler).toHaveBeenCalledTimes(1);
     });
@@ -188,12 +206,10 @@ describe("Queue", () => {
         "Queue is full. Job dropped (DROP_NEWEST)."
       );
 
-      expect(droppedHandler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          job: expect.objectContaining({ payload: { email: "user2@test.com" } }),
-          reason: "DROP_NEWEST",
-        })
-      );
+      const [droppedEvent] = droppedHandler.mock.calls[0] as [{ job: QueueJob; reason: string }];
+
+      expect(droppedEvent.job.payload).toEqual({ email: "user2@test.com" });
+      expect(droppedEvent.reason).toBe("DROP_NEWEST");
     });
 
     it('should drop the oldest pending job and add the new job with DROP_OLDEST', async () => {
@@ -210,7 +226,7 @@ describe("Queue", () => {
 
       const firstJob = await queue.add({ email: 'user1@test.com' }, { maxAttempts: 3 });
       const replacementJob = await queue.add({ email: 'user2@test.com' }, { maxAttempts: 4 });
-      const storage = queue.getStorage() as MemoryStorageAdapter<{ email: string }>;
+      const storage = queue.getStorage() as MemoryStorageAdapter<QueuePayload>;
       const nextJob = await storage.dequeue('test-queue', 0);
 
       expect(replacementJob.payload.email).toBe('user2@test.com');
@@ -237,8 +253,8 @@ describe("Queue", () => {
       const job = await queue.add({ email: 'retry@test.com' }, { maxAttempts: 5 });
 
       expect(job.payload.email).toBe('retry@test.com');
-      expect(storage.dequeue).not.toHaveBeenCalled();
-      expect(storage.enqueue).toHaveBeenCalledTimes(2);
+      expect(storage.dequeue.mock.calls).toHaveLength(0);
+      expect(storage.enqueue.mock.calls).toHaveLength(2);
     });
 
     it('should wait for the enqueue lock before retrying DROP_OLDEST', async () => {
@@ -253,8 +269,10 @@ describe("Queue", () => {
         backpressureStrategy: BackpressureStrategy.DROP_OLDEST,
       });
 
-      (queue as any).enqueueLock = true;
-      const dropOldestPromise = (queue as any).dropOldestAndEnqueue({
+      const internals = getQueueInternals(queue);
+
+      internals.enqueueLock = true;
+      const dropOldestPromise = internals.dropOldestAndEnqueue({
         id: 'locked-job',
         payload: { email: 'locked@test.com' },
         attempts: 0,
@@ -265,7 +283,7 @@ describe("Queue", () => {
       });
 
       setTimeout(() => {
-        (queue as any).enqueueLock = false;
+        internals.enqueueLock = false;
       }, 5);
 
       jest.advanceTimersByTime(10);
@@ -273,7 +291,7 @@ describe("Queue", () => {
       jest.useRealTimers();
 
       expect(job.payload.email).toBe('locked@test.com');
-      expect(storage.enqueue).toHaveBeenCalled();
+      expect(storage.enqueue.mock.calls.length).toBeGreaterThan(0);
     });
 
     it('should fail DROP_OLDEST when no pending job can be dropped', async () => {
@@ -295,12 +313,10 @@ describe("Queue", () => {
         'No pending jobs to drop'
       );
 
-      expect(droppedHandler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          job: expect.objectContaining({ payload: { email: 'blocked@test.com' } }),
-          reason: 'DROP_OLDEST_FAILED',
-        })
-      );
+      const [droppedEvent] = droppedHandler.mock.calls[0] as [{ job: QueueJob; reason: string }];
+
+      expect(droppedEvent.job.payload).toEqual({ email: 'blocked@test.com' });
+      expect(droppedEvent.reason).toBe('DROP_OLDEST_FAILED');
     });
 
     it('should restore the dropped job if replacement enqueue fails', async () => {
@@ -324,7 +340,7 @@ describe("Queue", () => {
         'Failed to enqueue new job even after dropping oldest job.'
       );
 
-      expect(storage.enqueue).toHaveBeenNthCalledWith(3, 'test-queue', oldestJob);
+      expect(storage.enqueue.mock.calls[2]).toEqual(['test-queue', oldestJob]);
     });
 
     it('should block producers until queued work is drained', async () => {
@@ -334,7 +350,8 @@ describe("Queue", () => {
       });
       await queue.connect();
 
-      const storage = queue.getStorage() as MemoryStorageAdapter<{ email: string }>;
+      const storage = queue.getStorage() as MemoryStorageAdapter<QueuePayload>;
+      const internals = getQueueInternals(queue);
 
       await queue.add({ email: 'user1@test.com' }, { maxAttempts: 2 });
       const waitingJobPromise = queue.add({ email: 'user2@test.com' }, { maxAttempts: 5 });
@@ -345,7 +362,7 @@ describe("Queue", () => {
       expect(activeJob?.payload.email).toBe('user1@test.com');
 
       await storage.markCompleted('test-queue', activeJob!.id);
-      await (queue as any).drainWaitingProducers();
+      await internals.drainWaitingProducers();
 
       await expect(waitingJobPromise).resolves.toEqual(
         expect.objectContaining({
@@ -364,8 +381,10 @@ describe("Queue", () => {
         backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
       });
 
-      const waitingJobPromise = new Promise<Job<{ email: string }>>((resolve, reject) => {
-        (queue as any).waitingProducers.push({
+      const internals = getQueueInternals(queue);
+
+      const waitingJobPromise = new Promise<QueueJob>((resolve, reject) => {
+        internals.waitingProducers.push({
           payload: { email: 'waiting@test.com' },
           options: { maxAttempts: 4 },
           resolve,
@@ -373,8 +392,8 @@ describe("Queue", () => {
         });
       });
 
-      (queue as any).add = jest.fn().mockRejectedValue(new Error('enqueue failed while draining'));
-      await (queue as any).drainWaitingProducers();
+      internals.add = jest.fn().mockRejectedValue(new Error('enqueue failed while draining')) as unknown as QueueInternals['add'];
+      await internals.drainWaitingProducers();
 
       await expect(waitingJobPromise).rejects.toThrow('enqueue failed while draining');
     });
@@ -388,8 +407,10 @@ describe("Queue", () => {
         backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
       });
 
-      const waitingJobPromise = new Promise<Job<{ email: string }>>((resolve, reject) => {
-        (queue as any).waitingProducers.push({
+      const internals = getQueueInternals(queue);
+
+      const waitingJobPromise = new Promise<QueueJob>((resolve, reject) => {
+        internals.waitingProducers.push({
           payload: { email: 'waiting@test.com' },
           options: { maxAttempts: 4 },
           resolve,
@@ -397,8 +418,8 @@ describe("Queue", () => {
         });
       });
 
-      (queue as any).add = jest.fn().mockRejectedValue('string failure');
-      await (queue as any).drainWaitingProducers();
+      internals.add = jest.fn().mockRejectedValue('string failure') as unknown as QueueInternals['add'];
+      await internals.drainWaitingProducers();
 
       await expect(waitingJobPromise).rejects.toThrow('string failure');
     });
@@ -412,16 +433,18 @@ describe("Queue", () => {
         backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
       });
 
-      (queue as any).waitingProducers.push({
+      const internals = getQueueInternals(queue);
+
+      internals.waitingProducers.push({
         payload: { email: 'waiting@test.com' },
         options: { maxAttempts: 4 },
         resolve: jest.fn(),
         reject: jest.fn(),
       });
 
-      await (queue as any).drainWaitingProducers();
+      await internals.drainWaitingProducers();
 
-      expect((queue as any).waitingProducers).toHaveLength(1);
+      expect(internals.waitingProducers).toHaveLength(1);
     });
 
     it('should fall back to the default queue full error for unknown strategies', async () => {
@@ -429,7 +452,7 @@ describe("Queue", () => {
       storage.enqueue.mockResolvedValue(false);
 
       queue = new Queue('test-queue', { storage });
-      (queue as any).backpressureStrategy = 'UNKNOWN_STRATEGY';
+      getQueueInternals(queue).backpressureStrategy = 'UNKNOWN_STRATEGY';
 
       await queue.connect();
 

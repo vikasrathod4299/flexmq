@@ -104,7 +104,7 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
 
     return {
       id: data["id"],
-      payload: JSON.parse(data["payload"]),
+      payload: JSON.parse(data["payload"]) as T,
       attempts: parseInt(data["attempts"], 10),
       maxAttempts: parseInt(data["maxAttempts"], 10),
       status: data["status"] as Job<T>["status"],
