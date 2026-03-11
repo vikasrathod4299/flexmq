@@ -1,7 +1,6 @@
 export interface RedisConfig {
-    host: string;
-    port: number;
-    password?: string;
-    queueName: string;
-    capacity: number;
+  host: string;
+  port: number;
+  password?: string;
+  capacity: number;
 }

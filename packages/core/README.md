@@ -14,26 +14,26 @@ npm install flexmq
 ## Quick start
 
 ```ts
-import { Queue, Worker } from 'flexmq';
+import { Queue, Worker } from "flexmq";
 
 type JobPayload = { message: string };
 
-const queue = new Queue<JobPayload>('emails', {
+const queue = new Queue<JobPayload>("emails", {
   capacity: 1000,
 });
 
-const worker = new Worker<JobPayload>('emails', {
+const worker = new Worker<JobPayload>("emails", {
   concurrency: 2,
   processor: async (job) => {
-    console.log('Processing:', job.payload.message);
+    console.log("Processing:", job.payload.message);
   },
 });
 
 async function main() {
   await queue.connect();
 
-  await queue.add({ message: 'Welcome email' }, { maxAttempts: 3 });
-  await queue.add({ message: 'Password reset' }, { maxAttempts: 5 });
+  await queue.add({ message: "Welcome email" }, { maxAttempts: 3 });
+  await queue.add({ message: "Password reset" }, { maxAttempts: 5 });
 
   await worker.start();
 
@@ -64,9 +64,9 @@ Use `backpressureStrategy` in `Queue` options:
 Example:
 
 ```ts
-import { Queue, BackpressureStrategy } from 'flexmq';
+import { Queue, BackpressureStrategy } from "flexmq";
 
-const queue = new Queue('events', {
+const queue = new Queue("events", {
   capacity: 500,
   backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
 });
@@ -77,10 +77,11 @@ const queue = new Queue('events', {
 Set retries per job with `maxAttempts`:
 
 ```ts
-await queue.add({ message: 'Send receipt' }, { maxAttempts: 4 });
+await queue.add({ message: "Send receipt" }, { maxAttempts: 4 });
 ```
 
 On processor errors:
+
 - job is retried with exponential backoff
 - after max attempts, job is marked `failed`
 

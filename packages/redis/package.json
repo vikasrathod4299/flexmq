@@ -1,56 +1,55 @@
 {
-    "name": "@flexmq/redis",
-    "version": "0.1.0",
-    "description": "Redis storage adapter for flexmq job queue",
-    "author": "Vikas Rathod",
-    "license": "MIT",
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/vikasrathod4299/flexmq.git",
-        "directory": "packages/redis"
-    },
-    "bugs": {
-        "url": "https://github.com/vikasrathod4299/flexmq/issues"
-    },
-    "homepage": "https://github.com/vikasrathod4299/flexmq#readme",
-    "keywords": [
-        "flexmq",
-        "redis",
-        "job-queue",
-        "async-queue",
-        "storage-adapter"
-    ],
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
-    "exports": {
-        ".": {
-            "types": "./dist/index.d.ts",
-            "require": "./dist/index.js"
-        }
-    },
-    "publishConfig": {
-        "access": "public"
-    },
-    "files": [
-        "dist" 
-    ],
-    "engines": {
-        "node": ">=16.0.0"
-    },
-    "scripts": {
-        "build": "tsc && cp -r src/lua-scripts dist/lua-scripts",
-        "clean": "rm -rf dist",
-        "prepublishOnly": "npm run build"
-    },
-
-    "dependencies": {
-        "flexmq": "^0.1.0"
-    },
-    "peerDependencies": {
-        "ioredis": "^5.0.0"
-    },
-    "devDependencies": {
-        "ioredis": "^5.9.2",
-        "@types/ioredis": "^4.28.10"
+  "name": "@flexmq/redis",
+  "version": "0.1.1",
+  "description": "Redis storage adapter for flexmq job queue",
+  "author": "Vikas Rathod",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vikasrathod4299/flexmq.git",
+    "directory": "packages/redis"
+  },
+  "bugs": {
+    "url": "https://github.com/vikasrathod4299/flexmq/issues"
+  },
+  "homepage": "https://github.com/vikasrathod4299/flexmq#readme",
+  "keywords": [
+    "flexmq",
+    "redis",
+    "job-queue",
+    "async-queue",
+    "storage-adapter"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "scripts": {
+    "build": "tsc && cp -r src/lua-scripts dist/lua-scripts",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "ioredis": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/ioredis": "^4.28.10",
+    "ioredis": "^5.9.2"
+  },
+  "dependencies": {
+    "flexmq": "^0.1.1"
+  }
 }

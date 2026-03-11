@@ -62,6 +62,7 @@ npm test
 ## Reporting issues
 
 Please include:
+
 - environment details (Node version, OS)
 - reproduction steps
 - expected behavior

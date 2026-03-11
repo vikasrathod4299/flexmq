@@ -1,6 +1,43 @@
-import { Queue, BackpressureStrategy, clearMemoryStorageRegistry } from 'flexmq';
+import {
+  Queue,
+  BackpressureStrategy,
+  clearMemoryStorageRegistry,
+  type StorageAdapter,
+  type Job,
+  MemoryStorageAdapter,
+} from "flexmq";
 
-describe('Queue', () => {
+const createJob = (id: string, email: string): Job<{ email: string }> => ({
+  id,
+  payload: { email },
+  attempts: 0,
+  maxAttempts: 3,
+  status: "pending",
+  nextAttemptAt: null,
+  error: null,
+});
+
+const createMockStorage = (): jest.Mocked<StorageAdapter<{ email: string }>> => ({
+  connect: jest.fn().mockResolvedValue(undefined),
+  disconnect: jest.fn().mockResolvedValue(undefined),
+  enqueue: jest.fn().mockResolvedValue(true),
+  dequeue: jest.fn().mockResolvedValue(null),
+  peek: jest.fn().mockResolvedValue(null),
+  size: jest.fn().mockResolvedValue(0),
+  isFull: jest.fn().mockResolvedValue(false),
+  isEmpty: jest.fn().mockResolvedValue(true),
+  scheduleDelayed: jest.fn().mockResolvedValue(undefined),
+  promoteDelayedJobs: jest.fn().mockResolvedValue(0),
+  markProcessing: jest.fn().mockResolvedValue(undefined),
+  markCompleted: jest.fn().mockResolvedValue(undefined),
+  markFailed: jest.fn().mockResolvedValue(undefined),
+  getJob: jest.fn().mockResolvedValue(null),
+  updateJob: jest.fn().mockResolvedValue(undefined),
+  recoverStuckJobs: jest.fn().mockResolvedValue(0),
+  getProcessingJobs: jest.fn().mockResolvedValue([]),
+});
+
+describe("Queue", () => {
   let queue: Queue<{ email: string }>;
 
   beforeEach(() => {
@@ -13,14 +50,14 @@ describe('Queue', () => {
     }
   });
 
-  describe('constructor', () => {
-    it('should create queue with default options', () => {
-      queue = new Queue('test-queue');
-      expect(queue.getName()).toBe('test-queue');
+  describe("constructor", () => {
+    it("should create queue with default options", () => {
+      queue = new Queue("test-queue");
+      expect(queue.getName()).toBe("test-queue");
     });
 
-    it('should create queue with custom capacity', async () => {
-      queue = new Queue('test-queue', { capacity: 5 });
+    it("should create queue with custom capacity", async () => {
+      queue = new Queue("test-queue", { capacity: 5 });
       await queue.connect();
 
       // Fill queue
@@ -32,103 +69,407 @@ describe('Queue', () => {
       const size = await queue.getSize();
       expect(size).toBe(5);
     });
+
+    it("should expose provided storage adapter", () => {
+      const storage = createMockStorage();
+      queue = new Queue("test-queue", { storage });
+
+      expect(queue.getStorage()).toBe(storage);
+    });
   });
 
-  describe('add', () => {
+  describe("connection lifecycle", () => {
+    it("should connect and disconnect only once while emitting lifecycle events", async () => {
+      const storage = createMockStorage();
+      const connectedHandler = jest.fn();
+      const disconnectedHandler = jest.fn();
+
+      queue = new Queue("test-queue", { storage });
+      queue.on("queue:connected", connectedHandler);
+      queue.on("queue:disconnected", disconnectedHandler);
+
+      await queue.connect();
+      await queue.connect();
+      await queue.disconnect();
+      await queue.disconnect();
+
+      expect(storage.connect).toHaveBeenCalledTimes(1);
+      expect(storage.disconnect).toHaveBeenCalledTimes(1);
+      expect(connectedHandler).toHaveBeenCalledTimes(1);
+      expect(disconnectedHandler).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("add", () => {
     beforeEach(async () => {
-      queue = new Queue('test-queue', { capacity: 10 });
+      queue = new Queue("test-queue", { capacity: 10 });
       await queue.connect();
     });
 
-    it('should add job and return job object', async () => {
-      const job = await queue.add({ email: 'test@example.com' }, { maxAttempts: 3 });
+    it("should add job and return job object", async () => {
+      const job = await queue.add({ email: "test@example.com" }, { maxAttempts: 3 });
 
       expect(job.id).toBeDefined();
-      expect(job.payload.email).toBe('test@example.com');
-      expect(job.status).toBe('pending');
+      expect(job.payload.email).toBe("test@example.com");
+      expect(job.status).toBe("pending");
       expect(job.attempts).toBe(0);
     });
 
-    it('should emit job:added event', async () => {
-      const addedHandler = jest.fn();
-      queue.on('job:added', addedHandler);
+    it("should auto-connect and default maxAttempts to 3 when options are omitted", async () => {
+      queue = new Queue("auto-connect-queue", { capacity: 10 });
 
-      await queue.add({ email: 'test@example.com' }, { maxAttempts: 3 });
+      const job = await queue.add({ email: "default@test.com" });
+
+      expect(job.maxAttempts).toBe(3);
+    });
+
+    it("should emit job:added event", async () => {
+      const addedHandler = jest.fn();
+      queue.on("job:added", addedHandler);
+
+      await queue.add({ email: "test@example.com" }, { maxAttempts: 3 });
 
       expect(addedHandler).toHaveBeenCalledTimes(1);
       expect(addedHandler).toHaveBeenCalledWith(
         expect.objectContaining({
-          payload: { email: 'test@example.com' },
+          payload: { email: "test@example.com" },
         })
       );
     });
 
-    it('should set custom maxAttempts', async () => {
-      const job = await queue.add({ email: 'test@example.com' }, { maxAttempts: 5 });
+    it("should set custom maxAttempts", async () => {
+      const job = await queue.add({ email: "test@example.com" }, { maxAttempts: 5 });
       expect(job.maxAttempts).toBe(5);
     });
   });
 
-  describe('backpressure strategies', () => {
-    it('should throw error with DROP_NEWEST when full', async () => {
-      queue = new Queue('test-queue', {
+  describe("backpressure strategies", () => {
+    it("should throw error with DROP_NEWEST when full", async () => {
+      queue = new Queue("test-queue", {
         capacity: 2,
         backpressureStrategy: BackpressureStrategy.DROP_NEWEST,
       });
       await queue.connect();
 
-      await queue.add({ email: 'user1@test.com' }, { maxAttempts: 3 });
-      await queue.add({ email: 'user2@test.com' } , { maxAttempts: 3 });
+      await queue.add({ email: "user1@test.com" }, { maxAttempts: 3 });
+      await queue.add({ email: "user2@test.com" }, { maxAttempts: 3 });
 
-      await expect(queue.add({ email: 'user3@test.com' }, { maxAttempts: 3 })).rejects.toThrow('Queue is full');
+      await expect(queue.add({ email: "user3@test.com" }, { maxAttempts: 3 })).rejects.toThrow(
+        "Queue is full"
+      );
     });
 
-    it('should throw error with ERROR strategy when full', async () => {
-      queue = new Queue('test-queue', {
+    it("should throw error with ERROR strategy when full", async () => {
+      queue = new Queue("test-queue", {
         capacity: 2,
         backpressureStrategy: BackpressureStrategy.ERROR,
       });
       await queue.connect();
 
-      await queue.add({ email: 'user1@test.com' }, { maxAttempts: 3 });
-      await queue.add({ email: 'user2@test.com' }, { maxAttempts: 3 });
-      await expect(queue.add({ email: 'user3@test.com' }, { maxAttempts: 3 })).rejects.toThrow('Queue is full');
+      await queue.add({ email: "user1@test.com" }, { maxAttempts: 3 });
+      await queue.add({ email: "user2@test.com" }, { maxAttempts: 3 });
+      await expect(queue.add({ email: "user3@test.com" }, { maxAttempts: 3 })).rejects.toThrow(
+        "Queue is full"
+      );
+    });
+
+    it("should emit dropped event with DROP_NEWEST reason when full", async () => {
+      const droppedHandler = jest.fn();
+
+      queue = new Queue("test-queue", {
+        capacity: 1,
+        backpressureStrategy: BackpressureStrategy.DROP_NEWEST,
+      });
+      queue.on("job:dropped", droppedHandler);
+      await queue.connect();
+
+      await queue.add({ email: "user1@test.com" }, { maxAttempts: 3 });
+      await expect(queue.add({ email: "user2@test.com" }, { maxAttempts: 3 })).rejects.toThrow(
+        "Queue is full. Job dropped (DROP_NEWEST)."
+      );
+
+      expect(droppedHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          job: expect.objectContaining({ payload: { email: "user2@test.com" } }),
+          reason: "DROP_NEWEST",
+        })
+      );
+    });
+
+    it('should drop the oldest pending job and add the new job with DROP_OLDEST', async () => {
+      const droppedHandler = jest.fn();
+      const addedHandler = jest.fn();
+
+      queue = new Queue('test-queue', {
+        capacity: 1,
+        backpressureStrategy: BackpressureStrategy.DROP_OLDEST,
+      });
+      queue.on('job:dropped', droppedHandler);
+      queue.on('job:added', addedHandler);
+      await queue.connect();
+
+      const firstJob = await queue.add({ email: 'user1@test.com' }, { maxAttempts: 3 });
+      const replacementJob = await queue.add({ email: 'user2@test.com' }, { maxAttempts: 4 });
+      const storage = queue.getStorage() as MemoryStorageAdapter<{ email: string }>;
+      const nextJob = await storage.dequeue('test-queue', 0);
+
+      expect(replacementJob.payload.email).toBe('user2@test.com');
+      expect(replacementJob.maxAttempts).toBe(4);
+      expect(nextJob?.id).toBe(replacementJob.id);
+      expect(await queue.getSize()).toBe(0);
+      expect(droppedHandler).toHaveBeenCalledWith({ job: firstJob, reason: 'DROP_OLDEST' });
+      expect(addedHandler).toHaveBeenLastCalledWith(replacementJob);
+    });
+
+    it('should retry enqueueing immediately when queue is no longer full', async () => {
+      const storage = createMockStorage();
+      storage.enqueue
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+      storage.isFull.mockResolvedValue(false);
+
+      queue = new Queue('test-queue', {
+        storage,
+        backpressureStrategy: BackpressureStrategy.DROP_OLDEST,
+      });
+
+      await queue.connect();
+      const job = await queue.add({ email: 'retry@test.com' }, { maxAttempts: 5 });
+
+      expect(job.payload.email).toBe('retry@test.com');
+      expect(storage.dequeue).not.toHaveBeenCalled();
+      expect(storage.enqueue).toHaveBeenCalledTimes(2);
+    });
+
+    it('should wait for the enqueue lock before retrying DROP_OLDEST', async () => {
+      jest.useFakeTimers();
+
+      const storage = createMockStorage();
+      storage.enqueue.mockResolvedValue(true);
+      storage.isFull.mockResolvedValue(false);
+
+      queue = new Queue('test-queue', {
+        storage,
+        backpressureStrategy: BackpressureStrategy.DROP_OLDEST,
+      });
+
+      (queue as any).enqueueLock = true;
+      const dropOldestPromise = (queue as any).dropOldestAndEnqueue({
+        id: 'locked-job',
+        payload: { email: 'locked@test.com' },
+        attempts: 0,
+        maxAttempts: 3,
+        status: 'pending',
+        nextAttemptAt: null,
+        error: null,
+      });
+
+      setTimeout(() => {
+        (queue as any).enqueueLock = false;
+      }, 5);
+
+      jest.advanceTimersByTime(10);
+      const job = await dropOldestPromise;
+      jest.useRealTimers();
+
+      expect(job.payload.email).toBe('locked@test.com');
+      expect(storage.enqueue).toHaveBeenCalled();
+    });
+
+    it('should fail DROP_OLDEST when no pending job can be dropped', async () => {
+      const storage = createMockStorage();
+      const droppedHandler = jest.fn();
+      storage.enqueue.mockResolvedValue(false);
+      storage.isFull.mockResolvedValue(true);
+      storage.dequeue.mockResolvedValue(null);
+
+      queue = new Queue('test-queue', {
+        storage,
+        backpressureStrategy: BackpressureStrategy.DROP_OLDEST,
+      });
+      queue.on('job:dropped', droppedHandler);
+
+      await queue.connect();
+
+      await expect(queue.add({ email: 'blocked@test.com' }, { maxAttempts: 3 })).rejects.toThrow(
+        'No pending jobs to drop'
+      );
+
+      expect(droppedHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          job: expect.objectContaining({ payload: { email: 'blocked@test.com' } }),
+          reason: 'DROP_OLDEST_FAILED',
+        })
+      );
+    });
+
+    it('should restore the dropped job if replacement enqueue fails', async () => {
+      const storage = createMockStorage();
+      const oldestJob = createJob('oldest-job', 'oldest@test.com');
+      storage.enqueue
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+      storage.isFull.mockResolvedValue(true);
+      storage.dequeue.mockResolvedValue(oldestJob);
+
+      queue = new Queue('test-queue', {
+        storage,
+        backpressureStrategy: BackpressureStrategy.DROP_OLDEST,
+      });
+
+      await queue.connect();
+
+      await expect(queue.add({ email: 'replacement@test.com' }, { maxAttempts: 3 })).rejects.toThrow(
+        'Failed to enqueue new job even after dropping oldest job.'
+      );
+
+      expect(storage.enqueue).toHaveBeenNthCalledWith(3, 'test-queue', oldestJob);
+    });
+
+    it('should block producers until queued work is drained', async () => {
+      queue = new Queue('test-queue', {
+        capacity: 1,
+        backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
+      });
+      await queue.connect();
+
+      const storage = queue.getStorage() as MemoryStorageAdapter<{ email: string }>;
+
+      await queue.add({ email: 'user1@test.com' }, { maxAttempts: 2 });
+      const waitingJobPromise = queue.add({ email: 'user2@test.com' }, { maxAttempts: 5 });
+
+      await Promise.resolve();
+
+      const activeJob = await storage.dequeue('test-queue', 0);
+      expect(activeJob?.payload.email).toBe('user1@test.com');
+
+      await storage.markCompleted('test-queue', activeJob!.id);
+      await (queue as any).drainWaitingProducers();
+
+      await expect(waitingJobPromise).resolves.toEqual(
+        expect.objectContaining({
+          payload: { email: 'user2@test.com' },
+          maxAttempts: 5,
+        })
+      );
+    });
+
+    it('should reject blocked producers when draining cannot re-enqueue', async () => {
+      const storage = createMockStorage();
+      storage.isFull.mockResolvedValue(false);
+
+      queue = new Queue('test-queue', {
+        storage,
+        backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
+      });
+
+      const waitingJobPromise = new Promise<Job<{ email: string }>>((resolve, reject) => {
+        (queue as any).waitingProducers.push({
+          payload: { email: 'waiting@test.com' },
+          options: { maxAttempts: 4 },
+          resolve,
+          reject,
+        });
+      });
+
+      (queue as any).add = jest.fn().mockRejectedValue(new Error('enqueue failed while draining'));
+      await (queue as any).drainWaitingProducers();
+
+      await expect(waitingJobPromise).rejects.toThrow('enqueue failed while draining');
+    });
+
+    it('should wrap non-Error drain failures in an Error instance', async () => {
+      const storage = createMockStorage();
+      storage.isFull.mockResolvedValue(false);
+
+      queue = new Queue('test-queue', {
+        storage,
+        backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
+      });
+
+      const waitingJobPromise = new Promise<Job<{ email: string }>>((resolve, reject) => {
+        (queue as any).waitingProducers.push({
+          payload: { email: 'waiting@test.com' },
+          options: { maxAttempts: 4 },
+          resolve,
+          reject,
+        });
+      });
+
+      (queue as any).add = jest.fn().mockRejectedValue('string failure');
+      await (queue as any).drainWaitingProducers();
+
+      await expect(waitingJobPromise).rejects.toThrow('string failure');
+    });
+
+    it('should leave waiting producers queued when storage is still full', async () => {
+      const storage = createMockStorage();
+      storage.isFull.mockResolvedValue(true);
+
+      queue = new Queue('test-queue', {
+        storage,
+        backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
+      });
+
+      (queue as any).waitingProducers.push({
+        payload: { email: 'waiting@test.com' },
+        options: { maxAttempts: 4 },
+        resolve: jest.fn(),
+        reject: jest.fn(),
+      });
+
+      await (queue as any).drainWaitingProducers();
+
+      expect((queue as any).waitingProducers).toHaveLength(1);
+    });
+
+    it('should fall back to the default queue full error for unknown strategies', async () => {
+      const storage = createMockStorage();
+      storage.enqueue.mockResolvedValue(false);
+
+      queue = new Queue('test-queue', { storage });
+      (queue as any).backpressureStrategy = 'UNKNOWN_STRATEGY';
+
+      await queue.connect();
+
+      await expect(queue.add({ email: 'user@test.com' }, { maxAttempts: 3 })).rejects.toThrow('Queue is full.');
     });
   });
 
-  describe('getJob', () => {
+  describe("getJob", () => {
     beforeEach(async () => {
-      queue = new Queue('test-queue');
+      queue = new Queue("test-queue");
       await queue.connect();
     });
 
-    it('should retrieve job by ID', async () => {
-      const addedJob = await queue.add({ email: 'test@example.com' }, { maxAttempts: 3 });
+    it("should retrieve job by ID", async () => {
+      const addedJob = await queue.add({ email: "test@example.com" }, { maxAttempts: 3 });
       const job = await queue.getJob(addedJob.id);
 
       expect(job?.id).toBe(addedJob.id);
-      expect(job?.payload.email).toBe('test@example.com');
+      expect(job?.payload.email).toBe("test@example.com");
     });
 
-    it('should return null for non-existent job', async () => {
-      const job = await queue.getJob('non-existent-id');
+    it("should return null for non-existent job", async () => {
+      const job = await queue.getJob("non-existent-id");
       expect(job).toBeNull();
     });
   });
 
-  describe('getSize', () => {
+  describe("getSize", () => {
     beforeEach(async () => {
-      queue = new Queue('test-queue');
+      queue = new Queue("test-queue");
       await queue.connect();
     });
 
-    it('should return correct queue size', async () => {
+    it("should return correct queue size", async () => {
       expect(await queue.getSize()).toBe(0);
 
-      await queue.add({ email: 'user1@test.com' }, { maxAttempts: 3 });
+      await queue.add({ email: "user1@test.com" }, { maxAttempts: 3 });
       expect(await queue.getSize()).toBe(1);
 
-      await queue.add({ email: 'user2@test.com' }, { maxAttempts: 3 });
+      await queue.add({ email: "user2@test.com" }, { maxAttempts: 3 });
       expect(await queue.getSize()).toBe(2);
     });
   });

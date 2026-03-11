@@ -1,7 +1,6 @@
-import { EventEmitter } from 'events';
-import { BoundedQueue } from './BoundedQueue';
-import BackpressureStrategy from './BackpressureStrategy';
-
+import { EventEmitter } from "events";
+import { BoundedQueue } from "./BoundedQueue";
+import BackpressureStrategy from "./BackpressureStrategy";
 
 class AsyncQueue<T> extends EventEmitter {
   private queue: BoundedQueue<T>;
@@ -9,7 +8,10 @@ class AsyncQueue<T> extends EventEmitter {
   private waitingConsumers: Array<(value: T) => void> = [];
   private waitingProducers: Array<{ item: T; resolve: (value: boolean) => void }> = [];
 
-  constructor(capacity: number = 1000, strategy: BackpressureStrategy = BackpressureStrategy.BLOCK_PRODUCER) {
+  constructor(
+    capacity: number = 1000,
+    strategy: BackpressureStrategy = BackpressureStrategy.BLOCK_PRODUCER
+  ) {
     super();
     this.queue = new BoundedQueue<T>(capacity);
     this.strategy = strategy;
@@ -25,12 +27,12 @@ class AsyncQueue<T> extends EventEmitter {
     if (this.queue.isFull) {
       switch (this.strategy) {
         case BackpressureStrategy.DROP_NEWEST:
-          this.emit('queue:dropped', { reason: 'DROP_NEWEST strategy applied' } as any);
+          this.emit("queue:dropped", { reason: "DROP_NEWEST strategy applied" } as any);
           return false;
         case BackpressureStrategy.DROP_OLDEST:
           this.queue.pop();
           this.queue.push(item);
-          this.emit('queue:dropped', { reason: 'DROP_OLDEST strategy applied' } as any);
+          this.emit("queue:dropped", { reason: "DROP_OLDEST strategy applied" } as any);
           return true;
         case BackpressureStrategy.BLOCK_PRODUCER:
           return new Promise<boolean>((resolve) => {
@@ -46,9 +48,8 @@ class AsyncQueue<T> extends EventEmitter {
   }
 
   async dequeue(): Promise<T> {
-
     if (this.queue.isEmpty) {
-      this.emit('queue:drained');
+      this.emit("queue:drained");
       return new Promise<T>((resolve) => {
         this.waitingConsumers.push(resolve);
       });
@@ -62,7 +63,7 @@ class AsyncQueue<T> extends EventEmitter {
       resolve(true);
     }
 
-    return item
+    return item;
   }
 
   size(): number {
@@ -90,9 +91,9 @@ class AsyncQueue<T> extends EventEmitter {
       },
       [Symbol.asyncIterator]() {
         return this;
-      }
+      },
     };
   }
-};
+}
 
 export { AsyncQueue };
