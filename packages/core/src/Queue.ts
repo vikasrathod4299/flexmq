@@ -154,16 +154,18 @@ export class Queue<T> extends EventEmitter {
     if (this.drainingProducers) return;
     this.drainingProducers = true;
 
-    if (this.waitingProducers.length === 0) return;
-    if (await this.storage.isFull(this.queueName)) return;
-
-    const waiter = this.waitingProducers.shift()!;
-
     try {
-      const job = await this.add(waiter.payload, waiter.options);
-      waiter.resolve(job);
-    } catch (error) {
-      waiter.reject(error instanceof Error ? error : new Error(String(error)));
+      if (this.waitingProducers.length === 0) return;
+      if (await this.storage.isFull(this.queueName)) return;
+
+      const waiter = this.waitingProducers.shift()!;
+
+      try {
+        const job = await this.add(waiter.payload, waiter.options);
+        waiter.resolve(job);
+      } catch (error) {
+        waiter.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     } finally {
       this.drainingProducers = false;
     }

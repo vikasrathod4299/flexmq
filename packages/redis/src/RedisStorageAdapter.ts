@@ -1,8 +1,8 @@
 import type { Job, StorageAdapter } from "flexmq";
 import type { RedisConfig } from "./RedisConfig";
 import Redis from "ioredis";
-import path from "path";
-import fs from "fs";
+import * as path from "path";
+import * as fs from "fs";
 
 export class RedisStorageAdapter<T> implements StorageAdapter<T> {
   private client: Redis;

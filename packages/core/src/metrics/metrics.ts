@@ -13,9 +13,9 @@ export interface MetricsSnapshot {
   maxProcessingTime: number;
   minProcessingTime: number;
 
-  p50ProcessingTime?: number;
-  p95ProcessingTime?: number;
-  p99ProcessingTime?: number;
+  p50ProcessingTime: number;
+  p95ProcessingTime: number;
+  p99ProcessingTime: number;
 
   jobsPerSecond: number;
 
@@ -188,9 +188,9 @@ export class Metrics {
 
       # HELP processing_time_seconds Job processing time
       # TYPE processing_time_seconds summary
-      processing_time_seconds{quantile="0.5"} ${(snapshot.p50ProcessingTime ?? 0) / 1000}
-      processing_time_seconds{quantile="0.95"} ${(snapshot.p95ProcessingTime ?? 0) / 1000}
-      processing_time_seconds{quantile="0.99"} ${(snapshot.p99ProcessingTime ?? 0) / 1000}
+      processing_time_seconds{quantile="0.5"} ${snapshot.p50ProcessingTime / 1000}
+      processing_time_seconds{quantile="0.95"} ${snapshot.p95ProcessingTime / 1000}
+      processing_time_seconds{quantile="0.99"} ${snapshot.p99ProcessingTime / 1000}
     `.trim();
   }
 }
