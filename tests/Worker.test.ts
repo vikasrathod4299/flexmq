@@ -61,12 +61,10 @@ describe("Worker", () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       expect(completedHandler).toHaveBeenCalledTimes(1);
-      expect(completedHandler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          job: expect.objectContaining({ payload: { data: "test" } }),
-          duration: expect.any(Number),
-        })
-      );
+      const [event] = completedHandler.mock.calls[0] as [{ job: Job<{ data: string }>; duration: number }];
+
+      expect(event.job.payload).toEqual({ data: "test" });
+      expect(typeof event.duration).toBe("number");
     });
 
     it("should mark job as completed after processing", async () => {

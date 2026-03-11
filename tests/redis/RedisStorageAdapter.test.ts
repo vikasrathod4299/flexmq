@@ -129,8 +129,8 @@ describe('RedisStorageAdapter', () => {
     await expect(adapter.enqueue('emails', job)).resolves.toBe(true);
     await expect(adapter.enqueue('emails', createJob('job-2'))).resolves.toBe(false);
 
-    const firstEvalCall = client.eval.mock.calls[0];
-    const serializedJob = JSON.parse(firstEvalCall[6]);
+    const firstEvalCall = client.eval.mock.calls[0] as [string, number, string, string, string, string, string];
+    const serializedJob = JSON.parse(firstEvalCall[6]) as Job<{ email: string }>;
 
     expect(firstEvalCall).toEqual([
       expect.any(String),
