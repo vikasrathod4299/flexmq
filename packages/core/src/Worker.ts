@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { Job } from "./types/Job";
-import type { StorageAdapter } from "./storage/StorageAdapter";
+import type { Claim, StorageAdapter } from "./storage/StorageAdapter";
 import Metrics from "./metrics/metrics";
 import { getMemoryStorage } from "./storage/StorageRegistry";
 
@@ -8,9 +8,15 @@ export interface WorkerOptions<T> {
   storage?: StorageAdapter<T>;
   concurrency?: number;
   processor: (job: Job<T>) => Promise<void>;
-  stuckJobTimeout?: number;
   capacity?: number;
-  timeoutMs?: number;
+
+  // stuckJobTimeout?: number;
+  // timeoutMs?: number;
+  dequeueTimeoutMs?: number;
+  leaseMs?: number;
+  heartbeatIntervalMs?: number;
+  recoveryIntervalMs?: number;
+  delayedJobCheckIntervalMs?: number;
 }
 
 export class Worker<T> extends EventEmitter {
@@ -18,20 +24,29 @@ export class Worker<T> extends EventEmitter {
   private queueName: string;
   private concurrency: number;
   private processor: (job: Job<T>) => Promise<void>;
-  private stuckJobTimeout: number;
+
+  // private stuckJobTimeout: number;
+  private dequeueTimeoutMs: number;
+  private leaseMs: number;
+  private heartbeatIntervalMs: number;
+  private recoveryIntervalMs: number;
+  private delayedJobCheckIntervalMs: number;
+
   private isRunning: boolean = false;
   private activeWorkers: number = 0;
-  private metrics: Metrics;
-  private timeoutMs: number;
+  private metrics: Metrics = new Metrics();
 
   constructor(queueName: string, options: WorkerOptions<T>) {
     super();
     this.queueName = queueName;
     this.concurrency = options.concurrency ?? 1;
     this.processor = options.processor;
-    this.stuckJobTimeout = options.stuckJobTimeout ?? 30000;
-    this.metrics = new Metrics();
-    this.timeoutMs = options.timeoutMs || 5000;
+
+    this.dequeueTimeoutMs = options.dequeueTimeoutMs ?? 5000;
+    this.leaseMs = options.leaseMs ?? 30000;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 10000;
+    this.recoveryIntervalMs = options.recoveryIntervalMs ?? 5000;
+    this.delayedJobCheckIntervalMs = options.delayedJobCheckIntervalMs ?? 250;
 
     // Use provided storage or fall back to in-memory
     this.storage = options.storage ?? getMemoryStorage<T>(queueName, options.capacity);
@@ -43,18 +58,18 @@ export class Worker<T> extends EventEmitter {
     await this.storage.connect();
 
     this.isRunning = true;
-    this.emit("worker:started", { queueName: this.queueName, concurrency: this.concurrency });
 
-    const recovered = await this.storage.recoverStuckJobs(this.queueName, this.stuckJobTimeout);
-    if (recovered > 0) {
-      this.emit("worker:recovered", { count: recovered });
-    }
+    this.emit("worker:started", { 
+        queueName: this.queueName,
+        concurrency: this.concurrency
+      });
 
     for (let i = 0; i < this.concurrency; i++) {
-      void this.workerLoop(i);
+      void this.workerLoop(`${this.queueName}-worker-${i}`);
     }
 
     void this.delayedJobLoop();
+    void this.recoveryLoop();
   }
 
   async stop(gracefulTimeoutMs: number = 5000): Promise<void> {
@@ -69,82 +84,171 @@ export class Worker<T> extends EventEmitter {
     this.emit("worker:stopped", { queueName: this.queueName });
   }
 
-  private async workerLoop(workerId: number): Promise<void> {
-    const workerName = `${this.queueName}-worker-${workerId}`;
-
+  private async workerLoop(workerId: string): Promise<void> {
     while (this.isRunning) {
       try {
-        const job = await this.storage.dequeue(this.queueName, this.timeoutMs);
+        const claim = await this.storage.claim(this.queueName, { workerId: workerId, leaseMs: this.leaseMs, waitTimeoutMs: this.dequeueTimeoutMs });
 
-        if (job) {
-          const size = await this.storage.size(this.queueName);
-          this.metrics.updateQueueSize(size);
+        if(!claim) {
+          continue;
+        }
+        this.activeWorkers++;
+        this.updateMetrics();
 
-          this.activeWorkers++;
+        // const size = await this.storage.size(this.queueName);
+        // this.metrics.updateQueueSize(size);
+
+        // this.activeWorkers++;
+        // this.updateMetrics();
+
+        try {
+          await this.processJob(claim, workerId);
+        } finally {
+          this.activeWorkers--;
           this.updateMetrics();
-          try {
-            await this.processJob(job, workerName);
-          } finally {
-            this.activeWorkers--;
-            this.updateMetrics();
-          }
         }
       } catch (error) {
-        this.emit("worker:error", { worker: workerName, error });
+        this.emit("worker:error", { worker: workerId, error });
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
   }
 
-  private async processJob(job: Job<T>, workerName: string): Promise<void> {
-    const startTime = Date.now();
-    this.emit("job:processing", { job, worker: workerName });
-    job.status = "processing";
+  private async processJob(claim: Claim<T>, workerId: string): Promise<void> {
+    const { job, claimToken } = claim;
+
+    const startedAt = Date.now();
+    // const startTime = Date.now();
+
+    this.emit("job:processing", { job, worker: workerId });
+
+    //job.status = "processing";
+    const heartBeat = this.startHeartbeat(job.id, claimToken, workerId);
 
     try {
       await this.processor(job);
-      await this.storage.markCompleted(this.queueName, job.id);
+      // await this.storage.markCompleted(this.queueName, job.id);
+      const complete = await this.storage.complete(this.queueName, job.id, claimToken); // complete() will also mark job as completed in storage, and handle edge cases like lease expiration or claim token mismatch
+      if(!complete) {
+        this.emit("job:lost-claim", { job, worker: workerId, phase: "complete" });
+        return;
+      }
 
-      job.status = "completed";
+      // job.status = "completed";
       this.metrics.incrementJobsCompleted();
-      this.metrics.recordProcessingTime(Date.now() - startTime);
-      this.emit("job:completed", { job, duration: Date.now() - startTime });
+      this.metrics.recordProcessingTime(Date.now() - startedAt);
+
+      this.emit("job:completed", { 
+          job : {...job, status: "completed" },
+          duration: Date.now() - startedAt 
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       if (job.attempts < job.maxAttempts) {
-        job.status = "pending";
+        // job.status = "pending";
 
         const delayMs = Math.pow(2, job.attempts) * 1000;
         const executeAt = Date.now() + delayMs;
 
-        await this.storage.scheduleDelayed(this.queueName, job, executeAt);
+        // await this.storage.scheduleDelayed(this.queueName, job, executeAt);
+        const retried = await  this.storage.retry(
+          this.queueName,
+          job.id,
+          claimToken,
+          executeAt,
+          errorMessage
+        )
+        
+        if(!retried) {
+          this.emit("job:lost-claim", { job, workerId, phase: "retry", error: errorMessage });
+          return;
+        }
 
         this.metrics.incrementRetries();
-        this.emit("job:retry", { job, error: errorMessage, nextAttemptAt: new Date(executeAt) });
+        this.emit("job:retry", { 
+          job: {
+            ...job,
+            status: "delayed",
+            error: errorMessage,
+            nextAttemptAt: new Date(executeAt) 
+          },
+          error: errorMessage, 
+          nextAttemptAt: new Date(executeAt) 
+        });
+
       } else {
-        job.status = "failed";
-        await this.storage.markFailed(this.queueName, job.id, errorMessage);
+        const failed = await this.storage.fail(
+          this.queueName,
+          job.id,
+          claimToken,
+          errorMessage
+        )
+
+        if(!failed) {
+          this.emit("job:lost-claim", { job, workerId, phase: "fail", error: errorMessage })
+          return;
+        }
+
+        // job.status = "failed";
+        // await this.storage.markFailed(this.queueName, job.id, errorMessage);
         this.metrics.incrementJobsFailed();
-        this.emit("job:failed", { job, error: errorMessage });
+        this.emit("job:failed", 
+          { job: {...job, status: "failed", error: errorMessage },
+          error: errorMessage 
+        });
       }
+
+    } finally {
+      clearInterval(heartBeat);
     }
+  }
+
+  private startHeartbeat(jobId: string, claimToken: string, workerId: string): NodeJS.Timeout {
+    return setInterval(async () => {
+      void this.storage.
+      renewLease(this.queueName, jobId, claimToken, this.leaseMs).
+      then((renewed) => {
+        if (!renewed) {
+          this.emit("job:lost-claim", { jobId, workerId, phase: "heartbeat" });
+        }
+      }).catch((error) => {
+        this.emit("worker:error", { workerId, error });
+      });
+    }, this.heartbeatIntervalMs);
   }
 
   private async delayedJobLoop(): Promise<void> {
     while (this.isRunning) {
       try {
-        const promoted = await this.storage.promoteDelayedJobs(this.queueName);
+
+        const promoted = await this.storage.promoteDelayedJobs(this.queueName, Date.now());
 
         if (promoted > 0) {
           this.emit("jobs:promoted", { count: promoted });
-          const size = await this.storage.size(this.queueName);
-          this.metrics.updateQueueSize(size);
+
+          // const size = await this.storage.size(this.queueName);
+          // this.metrics.updateQueueSize(size);
         }
       } catch (error) {
-        this.emit("error", { error, context: "delayedJobLoop" });
+        this.emit("worker:error", { workerId: "delayed-loop", error });
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, this.delayedJobCheckIntervalMs));
+    }
+  }
+
+  private async recoveryLoop(): Promise<void> {
+    while (this.isRunning) {
+      try {
+        const recovered = await this.storage.recoverExpiredJobs(this.queueName, Date.now());
+        
+        if (recovered > 0) {
+          this.emit("jobs:recovered", { count: recovered });
+        }
+      } catch (error) {
+        this.emit("worker:error", { workerId: "recovery-loop", error });
+      }
+      await new Promise((resolve) => setTimeout(resolve, this.recoveryIntervalMs));
     }
   }
 

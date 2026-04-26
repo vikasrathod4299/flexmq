@@ -124,22 +124,35 @@ export class Queue<T> extends EventEmitter {
           return job;
         }
       }
-      const oldestJob = await this.storage.dequeue(this.queueName, 0);
-      if (!oldestJob) {
+      const droppedClaim = await this.storage.claim(this.queueName, {
+        workerId: "queue:drop-oldest",
+        leaseMs: 60000, // long lease to ensure it doesn't get processed by a real worker
+        waitTimeoutMs: 1000 // short wait to avoid blocking too long if claim fails
+      });
+
+      if (!droppedClaim) {
         // No pending jobs to drop (all are processing), can't apply DROP_OLDEST
         this.emit("job:dropped", { job, reason: "DROP_OLDEST_FAILED" });
         throw new Error("Queue is full. No pending jobs to drop (all jobs are processing).");
       }
+
+      this.storage.fail(
+        this.queueName, 
+        droppedClaim.job.id, 
+        droppedClaim.claimToken, 
+        "Dropped: DROP_OLDEST strategy"
+      );
+      this.emit("job:dropped", { job: droppedClaim.job, reason: "DROP_OLDEST" });
+
       const added = await this.storage.enqueue(this.queueName, job);
 
       if (added) {
-        this.emit("job:dropped", { job: oldestJob, reason: "DROP_OLDEST" });
         this.emit("job:added", job);
         return job;
       }
 
       // Re-enqueue the dropped job so we don't lose it silently.
-      await this.storage.enqueue(this.queueName, oldestJob);
+      // await this.storage.enqueue(this.queueName, droppedClaim.job);
       throw new Error("Queue is full. Failed to enqueue new job even after dropping oldest job.");
     } finally {
       this.enqueueLock = false;
@@ -152,6 +165,8 @@ export class Queue<T> extends EventEmitter {
    */
   private async drainWaitingProducers(): Promise<void> {
     if (this.drainingProducers) return;
+    if (this.waitingProducers.length === 0) return;
+
     this.drainingProducers = true;
 
     try {

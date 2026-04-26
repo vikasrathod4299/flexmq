@@ -28,6 +28,9 @@ redis.call('HSET', jobKey,
     'updatedAt', safeStr(job.updatedAt, '0'),
     'processingStartedAt', '',
     'workerId', '',
+    'claimedAt', '',
+    'leaseUntil', '',
+    'claimToken', '',
     'error', safeStr(job.error)
 )
 
