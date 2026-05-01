@@ -49,6 +49,7 @@ const createMockStorage = (): jest.Mocked<StorageAdapter<QueuePayload>> => ({
   size: jest.fn().mockResolvedValue(0),
   isFull: jest.fn().mockResolvedValue(false),
   waitForCapacity: jest.fn().mockResolvedValue(true),
+  waitForTerminalState: jest.fn().mockResolvedValue(null),
   isEmpty: jest.fn().mockResolvedValue(true),
   promoteDelayedJobs: jest.fn().mockResolvedValue(0),
   recoverExpiredJobs: jest.fn().mockResolvedValue(0),
@@ -494,6 +495,31 @@ describe("Queue", () => {
     it("should return null for non-existent job", async () => {
       const job = await queue.getJob("non-existent-id");
       expect(job).toBeNull();
+    });
+  });
+
+  describe("waitForTerminalState", () => {
+    it("should delegate to storage with queue name and timeout", async () => {
+      const storage = createMockStorage();
+      const terminalJob = createJob("job-1", "done@test.com");
+      terminalJob.status = "completed";
+      storage.waitForTerminalState.mockResolvedValueOnce(terminalJob);
+
+      queue = new Queue("test-queue", { storage });
+      await queue.connect();
+
+      await expect(queue.waitForTerminalState("job-1", 1234)).resolves.toEqual(terminalJob);
+      expect(storage.waitForTerminalState).toHaveBeenCalledWith("test-queue", "job-1", 1234);
+    });
+
+    it("should auto-connect before waiting for terminal state", async () => {
+      const storage = createMockStorage();
+      queue = new Queue("test-queue", { storage });
+
+      await queue.waitForTerminalState("job-1");
+
+      expect(storage.connect).toHaveBeenCalledTimes(1);
+      expect(storage.waitForTerminalState).toHaveBeenCalledWith("test-queue", "job-1", 30000);
     });
   });
 

@@ -137,6 +137,26 @@ const queue = new Queue("events", {
 - only the worker holding the active `claimToken` may `complete`, `fail`, `retry`, or `renewLease`
 - expired claims are recoverable back to `pending`
 
+## Waiting for terminal state
+
+- `queue.waitForTerminalState(jobId, timeoutMs)` waits until a job becomes `completed` or `failed`
+- it returns the terminal job record, or `null` if the timeout expires first
+- with Redis storage, terminal waiting works across processes via Redis Streams
+
+Example:
+
+```ts
+const job = await queue.add({ to: "user@example.com", subject: "Welcome" });
+
+const terminalJob = await queue.waitForTerminalState(job.id, 30000);
+
+if (!terminalJob) {
+  console.log("Timed out waiting for terminal state");
+} else {
+  console.log(terminalJob.status, terminalJob.error);
+}
+```
+
 ---
 
 ## Redis adapter example

@@ -85,6 +85,7 @@ Queue name is provided to `Queue` and `Worker`, not to the Redis config.
 - queue capacity currently applies to `pending` jobs only
 - a producer blocked by `BLOCK_PRODUCER` wakes when pending capacity is freed
 - blocked producer fairness is FIFO per queue instance, not global across all processes
+- `waitForTerminalState()` uses Redis Streams to observe terminal job transitions across processes
 
 ## Production notes
 
@@ -100,6 +101,12 @@ Queue name is provided to `Queue` and `Worker`, not to the Redis config.
 - claimed jobs store `workerId`, `claimedAt`, `leaseUntil`, and `claimToken`
 - `complete()`, `fail()`, `retry()`, and `renewLease()` verify `claimToken`
 - `recoverExpiredJobs()` restores expired claims to `pending`
+
+## Terminal state waiting
+
+- `queue.waitForTerminalState(jobId, timeoutMs)` returns when a job reaches `completed` or `failed`
+- Redis uses stream-backed lifecycle events so the producer can wait across processes
+- timeout returns `null`
 
 ## Related packages
 

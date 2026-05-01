@@ -241,6 +241,14 @@ export class Queue<T> extends EventEmitter {
     return this.storage.size(this.queueName);
   }
 
+  async waitForTerminalState(jobId: string, timeoutMs: number = 30000): Promise<Job<T> | null> {
+    if (!this.isConnected) {
+      await this.connect();
+    }
+
+    return this.storage.waitForTerminalState(this.queueName, jobId, timeoutMs);
+  }
+
   getName(): string {
     return this.queueName;
   }

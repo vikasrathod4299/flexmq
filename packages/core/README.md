@@ -104,6 +104,12 @@ On processor errors:
 - only the active claim owner may mutate a processing job
 - expired claims are recoverable
 
+## Waiting for terminal state
+
+- `queue.waitForTerminalState(jobId, timeoutMs)` waits for `completed` or `failed`
+- it returns the terminal `Job<T>` or `null` on timeout
+- this is useful when a producer wants to observe job outcome without manual polling
+
 ## Events
 
 ### Queue events
