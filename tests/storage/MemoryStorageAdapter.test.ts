@@ -342,6 +342,44 @@ describe("MemoryStorageAdapter", () => {
     });
   });
 
+  describe("waitForTerminalState", () => {
+    it("should return completed job immediately when already terminal", async () => {
+      await storage.enqueue("test-queue", createJob("job-1"));
+      const claim = await storage.claim("test-queue", defaultClaimOptions);
+      await storage.complete("test-queue", "job-1", claim!.claimToken);
+
+      const job = await storage.waitForTerminalState("test-queue", "job-1", 1000);
+      expect(job?.status).toBe("completed");
+    });
+
+    it("should wait until a job becomes failed", async () => {
+      await storage.enqueue("test-queue", createJob("job-2"));
+      const claim = await storage.claim("test-queue", defaultClaimOptions);
+
+      const waitPromise = storage.waitForTerminalState("test-queue", "job-2", 2000);
+
+      setTimeout(async () => {
+        await storage.fail("test-queue", "job-2", claim!.claimToken, "boom");
+      }, 50);
+
+      const job = await waitPromise;
+      expect(job?.status).toBe("failed");
+      expect(job?.error).toBe("boom");
+    });
+
+    it("should return null when job does not become terminal before timeout", async () => {
+      await storage.enqueue("test-queue", createJob("job-3"));
+
+      const job = await storage.waitForTerminalState("test-queue", "job-3", 50);
+      expect(job).toBeNull();
+    });
+
+    it("should return null for missing jobs", async () => {
+      const job = await storage.waitForTerminalState("test-queue", "missing", 100);
+      expect(job).toBeNull();
+    });
+  });
+
   describe("delayed jobs", () => {
     it("should promote delayed jobs back to the queue via retry + promoteDelayedJobs", async () => {
       await storage.enqueue("test-queue", createJob("job-1"));

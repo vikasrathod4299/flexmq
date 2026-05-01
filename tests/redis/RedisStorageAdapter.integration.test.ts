@@ -556,4 +556,61 @@ describe("RedisStorageAdapter Integration", () => {
       }
     });
   });
+
+  describe("waitForTerminalState", () => {
+    it("should return completed job after another process completes it", async () => {
+      const storageA = new RedisStorageAdapter<{ email: string }>(REDIS_CONFIG);
+      const storageB = new RedisStorageAdapter<{ email: string }>(REDIS_CONFIG);
+
+      await storageA.connect();
+      await storageB.connect();
+
+      const queue = new Queue<{ email: string }>(QUEUE, { storage: storageA, capacity: 10 });
+
+      try {
+        await queue.connect();
+
+        const job = await queue.add({ email: "terminal@test.com" }, { maxAttempts: 3 });
+        const claim = await storageB.claim(QUEUE, {
+          workerId: "remote-worker",
+          leaseMs: 30000,
+          waitTimeoutMs: 0,
+        });
+
+        expect(claim).not.toBeNull();
+
+        const waitPromise = queue.waitForTerminalState(job.id, 5000);
+
+        setTimeout(async () => {
+          await storageB.complete(QUEUE, job.id, claim!.claimToken);
+        }, 50);
+
+        await expect(waitPromise).resolves.toEqual(
+          expect.objectContaining({
+            id: job.id,
+            status: "completed",
+          })
+        );
+      } finally {
+        await queue.disconnect();
+        await storageB.disconnect();
+      }
+    });
+
+    it("should return null when the job does not reach a terminal state before timeout", async () => {
+      const storage = new RedisStorageAdapter<{ email: string }>(REDIS_CONFIG);
+      await storage.connect();
+
+      const queue = new Queue<{ email: string }>(QUEUE, { storage, capacity: 10 });
+
+      try {
+        await queue.connect();
+        const job = await queue.add({ email: "pending@test.com" }, { maxAttempts: 3 });
+
+        await expect(queue.waitForTerminalState(job.id, 100)).resolves.toBeNull();
+      } finally {
+        await queue.disconnect();
+      }
+    });
+  });
 });

@@ -20,6 +20,12 @@ type CapacityWaiter = {
   timeoutId: NodeJS.Timeout;
 };
 
+type TerminalWaiter<T> = {
+  jobId: string;
+  resolve: (job: Job<T> | null) => void;
+  timeoutId: NodeJS.Timeout;
+};
+
 export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
   private pendingQueue: string[] = []; // Job IDs in FIFO order
   private jobs: Map<string, Job<T>> = new Map(); // All job data
@@ -27,6 +33,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
   private delayedJobs: Map<string, number> = new Map(); // jobId -> runAt timestamp
   private waitingClaimers: WaitingClaimer<T>[] = [];
   private waitingCapacity: CapacityWaiter[] = [];
+  private waitingTerminalState: TerminalWaiter<T>[] = [];
   private capacity: number;
 
   // private waitingConsumers: Array<(job: Job<T> | null) => void> = [];
@@ -49,9 +56,14 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
       waiter.resolve(false);
     }
 
+    for (const waiter of this.waitingTerminalState) {
+      waiter.resolve(null);
+    }
+
     // clear all data
     this.waitingClaimers = [];
     this.waitingCapacity = [];
+    this.waitingTerminalState = [];
     this.pendingQueue = [];
     this.jobs.clear();
     this.processingJobs.clear();
@@ -211,6 +223,48 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     });
   }
 
+  async waitForTerminalState(
+    _queueName: string,
+    jobId: string,
+    timeoutMs: number
+  ): Promise<Job<T> | null> {
+    const job = this.jobs.get(jobId) ?? null;
+    if (!job) {
+      return null;
+    }
+
+    if (this.isTerminalJob(job)) {
+      return job;
+    }
+
+    if (timeoutMs <= 0) {
+      return null;
+    }
+
+    return new Promise<Job<T> | null>((resolve) => {
+      const resolveWrapped = (resolvedJob: Job<T> | null) => {
+        clearTimeout(timeoutId);
+        resolve(resolvedJob);
+      };
+
+      const timeoutId = setTimeout(() => {
+        const index = this.waitingTerminalState.findIndex(
+          (waiter) => waiter.resolve === resolveWrapped
+        );
+        if (index !== -1) {
+          this.waitingTerminalState.splice(index, 1);
+        }
+        resolve(null);
+      }, timeoutMs);
+
+      this.waitingTerminalState.push({
+        jobId,
+        resolve: resolveWrapped,
+        timeoutId,
+      });
+    });
+  }
+
   async renewLease(
     queueName: string,
     jobId: string,
@@ -253,6 +307,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     this.clearClaimMetadata(job);
 
     this.processingJobs.delete(jobId);
+    this.notifyTerminalState(job);
 
     return true;
   }
@@ -279,6 +334,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     this.clearClaimMetadata(job);
 
     this.processingJobs.delete(jobId);
+    this.notifyTerminalState(job);
 
     return true;
   }
@@ -491,6 +547,29 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
       clearTimeout(waiter.timeoutId);
       waiter.resolve(true);
     }
+  }
+
+  private notifyTerminalState(job: Job<T>): void {
+    if (!this.isTerminalJob(job)) {
+      return;
+    }
+
+    const remainingWaiters: TerminalWaiter<T>[] = [];
+    for (const waiter of this.waitingTerminalState) {
+      if (waiter.jobId !== job.id) {
+        remainingWaiters.push(waiter);
+        continue;
+      }
+
+      clearTimeout(waiter.timeoutId);
+      waiter.resolve(job);
+    }
+
+    this.waitingTerminalState = remainingWaiters;
+  }
+
+  private isTerminalJob(job: Job<T>): boolean {
+    return job.status === "completed" || job.status === "failed";
   }
 
   // async scheduleDelayed(_queueName: string, job: Job<T>, executeAt: number): Promise<void> {

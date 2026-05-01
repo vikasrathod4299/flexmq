@@ -10,8 +10,6 @@ type MockRedisMulti = {
   exec: jest.Mock;
 };
 
-
-
 type MockRedisClient = {
   options: unknown;
   ping: jest.Mock;
@@ -206,6 +204,23 @@ describe("RedisStorageAdapter", () => {
       expect(result!.job.id).toBe("job-1");
       expect(result!.claimToken).toBeDefined();
       expect(blockingClient.brpop).toHaveBeenCalledWith("emails:pending", 5);
+      expect(client.xadd).toHaveBeenCalledWith(
+        "emails:capacity-events",
+        "MAXLEN",
+        "~",
+        1000,
+        "*",
+        "type",
+        "capacity_freed",
+        "queue",
+        "emails",
+        "jobId",
+        "job-1",
+        "workerId",
+        "worker-1",
+        "at",
+        expect.any(String)
+      );
     });
 
     it("should return null when BRPOP times out", async () => {
@@ -249,6 +264,23 @@ describe("RedisStorageAdapter", () => {
         "30000",
         expect.any(String), // now
         expect.any(String) // claimToken UUID
+      );
+      expect(client.xadd).toHaveBeenCalledWith(
+        "emails:capacity-events",
+        "MAXLEN",
+        "~",
+        1000,
+        "*",
+        "type",
+        "capacity_freed",
+        "queue",
+        "emails",
+        "jobId",
+        "job-1",
+        "workerId",
+        "worker-1",
+        "at",
+        expect.any(String)
       );
     });
 
@@ -320,6 +352,23 @@ describe("RedisStorageAdapter", () => {
         "claim-token-123",
         expect.any(String) // now
       );
+      expect(client.xadd).toHaveBeenCalledWith(
+        "emails:capacity-events",
+        "MAXLEN",
+        "~",
+        1000,
+        "*",
+        "type",
+        "job_terminal",
+        "queue",
+        "emails",
+        "jobId",
+        "job-1",
+        "status",
+        "completed",
+        "at",
+        expect.any(String)
+      );
     });
 
     it("should return false when claim token is invalid", async () => {
@@ -352,6 +401,23 @@ describe("RedisStorageAdapter", () => {
         "claim-token-123",
         expect.any(String), // now
         "something broke"
+      );
+      expect(client.xadd).toHaveBeenCalledWith(
+        "emails:capacity-events",
+        "MAXLEN",
+        "~",
+        1000,
+        "*",
+        "type",
+        "job_terminal",
+        "queue",
+        "emails",
+        "jobId",
+        "job-1",
+        "status",
+        "failed",
+        "at",
+        expect.any(String)
       );
     });
 
@@ -573,6 +639,81 @@ describe("RedisStorageAdapter", () => {
       client.zrange.mockResolvedValueOnce(["job-1", "job-2"]);
 
       await expect(adapter.getProcessingJobs("emails")).resolves.toEqual(["job-1", "job-2"]);
+    });
+  });
+
+  describe("waitForCapacity", () => {
+    it("should return true immediately when queue is not full", async () => {
+      const adapter = new RedisStorageAdapter(config);
+      const { client } = getClients();
+
+      client.llen.mockResolvedValueOnce(4);
+
+      await expect(adapter.waitForCapacity("emails", 5000)).resolves.toBe(true);
+      expect(client.xrevrange).not.toHaveBeenCalled();
+    });
+
+    it("should wait on the stream when queue is full", async () => {
+      const adapter = new RedisStorageAdapter(config);
+      const { client, streamClient } = getClients();
+
+      client.llen.mockResolvedValueOnce(10).mockResolvedValueOnce(10);
+      client.xrevrange.mockResolvedValueOnce([["12-0", ["type", "capacity_freed"]]]);
+      streamClient.xread.mockResolvedValueOnce([["emails:capacity-events", [["13-0", []]]]]);
+
+      await expect(adapter.waitForCapacity("emails", 5000)).resolves.toBe(true);
+      expect(client.xrevrange).toHaveBeenCalledWith("emails:capacity-events", "+", "-", "COUNT", 1);
+      expect(streamClient.xread).toHaveBeenCalledWith(
+        "BLOCK",
+        5000,
+        "STREAMS",
+        "emails:capacity-events",
+        "12-0"
+      );
+    });
+  });
+
+  describe("waitForTerminalState", () => {
+    it("should return terminal job immediately when already completed", async () => {
+      const adapter = new RedisStorageAdapter(config);
+      const { client } = getClients();
+
+      client.hgetall.mockResolvedValueOnce(createRedisJobHash({ status: "completed" }));
+
+      await expect(adapter.waitForTerminalState("emails", "job-1", 5000)).resolves.toEqual(
+        expect.objectContaining({
+          id: "job-1",
+          status: "completed",
+        })
+      );
+      expect(client.xrevrange).not.toHaveBeenCalled();
+    });
+
+    it("should wait on the stream and return terminal job after wake", async () => {
+      const adapter = new RedisStorageAdapter(config);
+      const { client, streamClient } = getClients();
+
+      client.hgetall
+        .mockResolvedValueOnce(createRedisJobHash({ status: "processing" }))
+        .mockResolvedValueOnce(createRedisJobHash({ status: "processing" }))
+        .mockResolvedValueOnce(createRedisJobHash({ status: "failed", error: "boom" }));
+      client.xrevrange.mockResolvedValueOnce([["20-0", ["type", "job_terminal"]]]);
+      streamClient.xread.mockResolvedValueOnce([["emails:capacity-events", [["21-0", []]]]]);
+
+      await expect(adapter.waitForTerminalState("emails", "job-1", 5000)).resolves.toEqual(
+        expect.objectContaining({
+          id: "job-1",
+          status: "failed",
+          error: "boom",
+        })
+      );
+      expect(streamClient.xread).toHaveBeenCalledWith(
+        "BLOCK",
+        5000,
+        "STREAMS",
+        "emails:capacity-events",
+        "20-0"
+      );
     });
   });
 });

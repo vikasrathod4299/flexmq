@@ -216,6 +216,55 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
     return result !== null;
   }
 
+  async waitForTerminalState(
+    queueName: string,
+    jobId: string,
+    timeoutMs: number
+  ): Promise<Job<T> | null> {
+    const currentJob = await this.getJob(queueName, jobId);
+    if (!currentJob) {
+      return null;
+    }
+
+    if (this.isTerminalJob(currentJob)) {
+      return currentJob;
+    }
+
+    if (timeoutMs <= 0) {
+      return null;
+    }
+
+    const streamKey = this.capacityEventsKey(queueName);
+    const latestEntries = (await this.client.xrevrange(streamKey, "+", "-", "COUNT", 1)) as Array<
+      [string, string[]]
+    >;
+    const lastSeenId = latestEntries[0]?.[0] ?? "$";
+
+    const recheckedJob = await this.getJob(queueName, jobId);
+    if (!recheckedJob) {
+      return null;
+    }
+
+    if (this.isTerminalJob(recheckedJob)) {
+      return recheckedJob;
+    }
+
+    const result = (await this.streamClient.xread(
+      "BLOCK",
+      timeoutMs,
+      "STREAMS",
+      streamKey,
+      lastSeenId
+    )) as Array<[string, Array<[string, string[]]>]> | null;
+
+    if (!result) {
+      return null;
+    }
+
+    const jobAfterWake = await this.getJob(queueName, jobId);
+    return jobAfterWake && this.isTerminalJob(jobAfterWake) ? jobAfterWake : null;
+  }
+
   // ── Renew lease ────────────────────────────────────────────────────
   async renewLease(
     queueName: string,
@@ -251,6 +300,10 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
       now.toString()
     )) as number;
 
+    if (result === 1) {
+      await this.emitLifecycleEvent(queueName, jobId, "completed", now);
+    }
+
     return result === 1;
   }
 
@@ -272,6 +325,10 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
       now.toString(),
       error ?? ""
     )) as number;
+
+    if (result === 1) {
+      await this.emitLifecycleEvent(queueName, jobId, "failed", now);
+    }
 
     return result === 1;
   }
@@ -376,6 +433,35 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
       "at",
       now.toString()
     );
+  }
+
+  private async emitLifecycleEvent(
+    queueName: string,
+    jobId: string,
+    status: "completed" | "failed",
+    now: number
+  ): Promise<void> {
+    await this.client.xadd(
+      this.capacityEventsKey(queueName),
+      "MAXLEN",
+      "~",
+      1000,
+      "*",
+      "type",
+      "job_terminal",
+      "queue",
+      queueName,
+      "jobId",
+      jobId,
+      "status",
+      status,
+      "at",
+      now.toString()
+    );
+  }
+
+  private isTerminalJob(job: Job<T>): boolean {
+    return job.status === "completed" || job.status === "failed";
   }
 
   // ── Parsing helpers ────────────────────────────────────────────────

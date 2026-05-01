@@ -47,6 +47,7 @@ export interface StorageAdapter<T> {
   size(queueName: string): Promise<number>;
   isFull(queueName: string): Promise<boolean>;
   waitForCapacity(queueName: string, timeoutMs: number): Promise<boolean>;
+  waitForTerminalState(queueName: string, jobId: string, timeoutMs: number): Promise<Job<T> | null>;
   isEmpty(queueName: string): Promise<boolean>;
   peek(queueName: string): Promise<Job<T> | null>;
 
