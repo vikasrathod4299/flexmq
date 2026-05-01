@@ -1,6 +1,6 @@
 {
   "name": "@flexmq/redis",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Redis storage adapter for flexmq job queue",
   "author": "Vikas Rathod",
   "license": "MIT",
@@ -50,6 +50,6 @@
     "ioredis": "^5.9.2"
   },
   "dependencies": {
-    "flexmq": "^0.1.1"
+    "flexmq": "^0.2.0"
   }
 }
