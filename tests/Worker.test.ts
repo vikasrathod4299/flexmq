@@ -61,7 +61,9 @@ describe("Worker", () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       expect(completedHandler).toHaveBeenCalledTimes(1);
-      const [event] = completedHandler.mock.calls[0] as [{ job: Job<{ data: string }>; duration: number }];
+      const [event] = completedHandler.mock.calls[0] as [
+        { job: Job<{ data: string }>; duration: number },
+      ];
 
       expect(event.job.payload).toEqual({ data: "test" });
       expect(typeof event.duration).toBe("number");
@@ -102,7 +104,7 @@ describe("Worker", () => {
           attempts++;
           if (attempts < 3) throw new Error("Temporary failure");
         },
-        timeoutMs: 10,
+        delayedJobCheckIntervalMs: 10,
       });
 
       const retryHandler = jest.fn();

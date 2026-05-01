@@ -9,7 +9,7 @@ export { Job, JobStatus } from "./types/Job";
 export type { QueueEventMap } from "./types/QueueEvents";
 
 // Storage (for implementing custom adapters)
-export { StorageAdapter } from "./storage/StorageAdapter";
+export type { StorageAdapter, Claim, ClaimOptions } from "./storage/StorageAdapter";
 export { MemoryStorageAdapter } from "./storage/MemoryStorageAdapter";
 export { getMemoryStorage, clearMemoryStorageRegistry } from "./storage/StorageRegistry";
 

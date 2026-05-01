@@ -1,21 +1,28 @@
 import type { Job } from "./Job";
 
-interface JobLifeCycleEvents<T> {
-  "job:added": { job: Job<T> };
-  "job:completed": { job: Job<T>; result: unknown };
-  "job:failed": { job: Job<T>; error: Error };
+export interface QueueEventMap<T> {
+  "queue:connected": void;
+  "queue:disconnected": void;
+  "job:added": Job<T>;
   "job:dropped": { job: Job<T>; reason: string };
 }
 
-interface QueueStateEvents {
-  "queue:full": void;
-  "queue:drained": void;
-  "queue:dropped": { reason: string };
+export interface WorkerEventMap<T> {
+  "worker:started": { queueName: string; concurrency: number };
+  "worker:stopped": { queueName: string };
+  "worker:error": { worker?: string; workerId?: string; error: unknown };
+  "job:processing": { job: Job<T>; worker: string };
+  "job:completed": { job: Job<T>; duration: number };
+  "job:retry": { job: Job<T>; error: string; nextAttemptAt: Date };
+  "job:failed": { job: Job<T>; error: string };
+  "job:lost-claim": {
+    job?: Job<T>;
+    jobId?: string;
+    worker?: string;
+    workerId?: string;
+    phase: "complete" | "retry" | "fail" | "heartbeat";
+    error?: string;
+  };
+  "jobs:promoted": { count: number };
+  "jobs:recovered": { count: number };
 }
-
-interface WorkerEvents {
-  "worker:idle": void;
-  "worker:busy": void;
-}
-
-export type QueueEventMap<T> = JobLifeCycleEvents<T> & QueueStateEvents & WorkerEvents;

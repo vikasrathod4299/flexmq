@@ -8,7 +8,11 @@ local promoted = 0
 
 for i, jobId in ipairs(jobIds) do
     redis.call('ZREM', delayedKey, jobId)
-    redis.call('HSET', jobKeyPrefix .. jobId, 'nextAttemptAt', '', 'updatedAt', now)
+    redis.call('HSET', jobKeyPrefix .. jobId,
+        'status', 'pending',
+        'nextAttemptAt', '',
+        'updatedAt', now
+    )
     redis.call('LPUSH', pendingKey, jobId)
     promoted = promoted + 1
 end

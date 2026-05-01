@@ -1,5 +1,6 @@
-import type { Job, StorageAdapter } from "flexmq";
+import type { Job, StorageAdapter, Claim, ClaimOptions } from "flexmq";
 import type { RedisConfig } from "./RedisConfig";
+import { randomUUID } from "node:crypto";
 import Redis from "ioredis";
 import * as path from "path";
 import * as fs from "fs";
@@ -7,6 +8,7 @@ import * as fs from "fs";
 export class RedisStorageAdapter<T> implements StorageAdapter<T> {
   private client: Redis;
   private blockingClient: Redis;
+  private streamClient: Redis;
   private config: RedisConfig;
 
   constructor(config: RedisConfig) {
@@ -19,22 +21,32 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
     };
     this.client = new Redis(redisOptions);
     this.blockingClient = new Redis(redisOptions);
+    this.streamClient = new Redis(redisOptions);
   }
 
+  // ── Lua scripts ────────────────────────────────────────────────────
   private enqueueLua = fs.readFileSync(path.join(__dirname, "lua-scripts", "enqueue.lua"), "utf-8");
-  private acquireJobLua = fs.readFileSync(
-    path.join(__dirname, "lua-scripts", "acquire-job.lua"),
+  private claimLua = fs.readFileSync(path.join(__dirname, "lua-scripts", "claim.lua"), "utf-8");
+  private completeLua = fs.readFileSync(
+    path.join(__dirname, "lua-scripts", "complete.lua"),
+    "utf-8"
+  );
+  private failLua = fs.readFileSync(path.join(__dirname, "lua-scripts", "fail.lua"), "utf-8");
+  private retryLua = fs.readFileSync(path.join(__dirname, "lua-scripts", "retry.lua"), "utf-8");
+  private renewLeaseLua = fs.readFileSync(
+    path.join(__dirname, "lua-scripts", "renew-lease.lua"),
     "utf-8"
   );
   private promoteDelayedLua = fs.readFileSync(
     path.join(__dirname, "lua-scripts", "promoteDelayed.lua"),
     "utf-8"
   );
-  private recoverStuckJobsLua = fs.readFileSync(
-    path.join(__dirname, "lua-scripts", "recoverStuckJobs.lua"),
+  private recoverExpiredLua = fs.readFileSync(
+    path.join(__dirname, "lua-scripts", "recover-expired.lua"),
     "utf-8"
   );
 
+  // ── Key helpers ────────────────────────────────────────────────────
   private pendingKey(queueName: string): string {
     return `${queueName}:pending`;
   }
@@ -44,20 +56,30 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
   private delayedKey(queueName: string): string {
     return `${queueName}:delayed`;
   }
+  private capacityEventsKey(queueName: string): string {
+    return `${queueName}:capacity-events`;
+  }
   private jobKey(queueName: string, id: string): string {
     return `${queueName}:job:${id}`;
   }
+  private jobKeyPrefix(queueName: string): string {
+    return `${queueName}:job:`;
+  }
 
+  // ── Connection lifecycle ───────────────────────────────────────────
   async connect(): Promise<void> {
     await this.client.ping();
     await this.blockingClient.ping();
+    await this.streamClient.ping();
   }
 
   async disconnect(): Promise<void> {
     await this.client.quit();
     await this.blockingClient.quit();
+    await this.streamClient.quit();
   }
 
+  // ── Enqueue ────────────────────────────────────────────────────────
   async enqueue(queueName: string, job: Job<T>): Promise<boolean> {
     const now = Date.now();
     job.createdAt = job.createdAt || now;
@@ -78,49 +100,239 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
     return result === 1;
   }
 
-  async dequeue(queueName: string, timeout: number = 5): Promise<Job<T> | null> {
-    const result = await this.blockingClient.brpop(this.pendingKey(queueName), timeout);
-    if (!result) return null;
+  // ── Claim ─────────────────────────────────────
+  async claim(queueName: string, options: ClaimOptions): Promise<Claim<T> | null> {
+    const { workerId, leaseMs, waitTimeoutMs } = options;
+    const claimToken = randomUUID();
+    const timeout = waitTimeoutMs ?? 5000;
 
-    const [, jobId] = result;
+    // If waitTimeoutMs > 0, use BRPOP to block-wait for a job to appear,
+    // then run the claim Lua to atomically set lease metadata.
+    // If waitTimeoutMs === 0, try a direct non-blocking claim via Lua (which does RPOP internally).
+    if (timeout > 0) {
+      // BRPOP timeout is in seconds (minimum 1 second for Redis)
+      const timeoutSec = Math.max(1, Math.ceil(timeout / 1000));
+      const result = await this.blockingClient.brpop(this.pendingKey(queueName), timeoutSec);
+
+      if (!result) return null;
+
+      const [, jobId] = result;
+      const now = Date.now();
+      const leaseUntil = now + leaseMs;
+
+      // We already popped the job from the list via BRPOP, so we need to
+      // atomically set the claim metadata without re-popping.
+      // Use a pipeline for atomicity of the metadata update.
+      const jobKey = this.jobKey(queueName, jobId);
+
+      const pipeline = this.client.multi();
+      pipeline.hset(
+        jobKey,
+        "status",
+        "processing",
+        "workerId",
+        workerId,
+        "claimedAt",
+        now.toString(),
+        "leaseUntil",
+        leaseUntil.toString(),
+        "claimToken",
+        claimToken,
+        "updatedAt",
+        now.toString(),
+        "processingStartedAt",
+        now.toString()
+      );
+      pipeline.hincrby(jobKey, "attempts", 1);
+      pipeline.zadd(this.processingKey(queueName), leaseUntil.toString(), jobId);
+      pipeline.hgetall(jobKey);
+      const results = await pipeline.exec();
+
+      if (!results) return null;
+
+      // hgetall is the 4th command (index 3)
+      const [err, data] = results[3] as [Error | null, Record<string, string>];
+      if (err || !data) return null;
+
+      const job = this.parseJobFromRedis(data);
+      if (!job) return null;
+
+      await this.emitCapacityFreed(queueName, jobId, workerId, now);
+
+      return { job, claimToken };
+    }
+
+    // Non-blocking: Lua script does RPOP + claim atomically
     const now = Date.now();
-
-    const jobData = (await this.client.eval(
-      this.acquireJobLua,
+    const result = (await this.client.eval(
+      this.claimLua,
       2,
+      this.pendingKey(queueName),
       this.processingKey(queueName),
-      this.jobKey(queueName, jobId),
+      this.jobKeyPrefix(queueName),
+      workerId,
+      leaseMs.toString(),
       now.toString(),
-      jobId
+      claimToken
     )) as string | null;
 
-    if (!jobData) return null;
+    if (!result) return null;
 
-    return JSON.parse(jobData) as Job<T>;
+    const job = this.parseJobFromRedisJson(result);
+    if (!job) return null;
+
+    await this.emitCapacityFreed(queueName, job.id, workerId, now);
+
+    return { job, claimToken };
   }
 
-  private parseJobFromRedis(data: Record<string, string>): Job<T> | null {
-    if (!data || Object.keys(data).length === 0) return null;
+  async waitForCapacity(queueName: string, timeoutMs: number): Promise<boolean> {
+    if (!(await this.isFull(queueName))) {
+      return true;
+    }
 
-    return {
-      id: data["id"],
-      payload: JSON.parse(data["payload"]) as T,
-      attempts: parseInt(data["attempts"], 10),
-      maxAttempts: parseInt(data["maxAttempts"], 10),
-      status: data["status"] as Job<T>["status"],
-      nextAttemptAt: data["nextAttemptAt"] ? new Date(parseInt(data["nextAttemptAt"], 10)) : null,
-      createdAt: data["createdAt"] ? parseInt(data["createdAt"], 10) : undefined,
-      updatedAt: data["updatedAt"] ? parseInt(data["updatedAt"], 10) : undefined,
-      processingStartedAt: data["processingStartedAt"]
-        ? parseInt(data["processingStartedAt"], 10)
-        : undefined,
-      workerId: data["workerId"] || undefined,
-      error: data["error"] || null,
-    };
+    if (timeoutMs <= 0) {
+      return false;
+    }
+
+    const streamKey = this.capacityEventsKey(queueName);
+    const latestEntries = (await this.client.xrevrange(streamKey, "+", "-", "COUNT", 1)) as Array<
+      [string, string[]]
+    >;
+    const lastSeenId = latestEntries[0]?.[0] ?? "$";
+
+    if (!(await this.isFull(queueName))) {
+      return true;
+    }
+
+    const result = (await this.streamClient.xread(
+      "BLOCK",
+      timeoutMs,
+      "STREAMS",
+      streamKey,
+      lastSeenId
+    )) as Array<[string, Array<[string, string[]]>]> | null;
+
+    return result !== null;
+  }
+
+  // ── Renew lease ────────────────────────────────────────────────────
+  async renewLease(
+    queueName: string,
+    jobId: string,
+    claimToken: string,
+    leaseMs: number
+  ): Promise<boolean> {
+    const now = Date.now();
+    const result = (await this.client.eval(
+      this.renewLeaseLua,
+      1,
+      this.processingKey(queueName),
+      this.jobKey(queueName, jobId),
+      jobId,
+      claimToken,
+      leaseMs.toString(),
+      now.toString()
+    )) as number;
+
+    return result === 1;
+  }
+
+  // ── Complete ───────────────────────────────────────────────────────
+  async complete(queueName: string, jobId: string, claimToken: string): Promise<boolean> {
+    const now = Date.now();
+    const result = (await this.client.eval(
+      this.completeLua,
+      1,
+      this.processingKey(queueName),
+      this.jobKey(queueName, jobId),
+      jobId,
+      claimToken,
+      now.toString()
+    )) as number;
+
+    return result === 1;
+  }
+
+  // ── Fail ───────────────────────────────────────────────────────────
+  async fail(
+    queueName: string,
+    jobId: string,
+    claimToken: string,
+    error?: string
+  ): Promise<boolean> {
+    const now = Date.now();
+    const result = (await this.client.eval(
+      this.failLua,
+      1,
+      this.processingKey(queueName),
+      this.jobKey(queueName, jobId),
+      jobId,
+      claimToken,
+      now.toString(),
+      error ?? ""
+    )) as number;
+
+    return result === 1;
+  }
+
+  // ── Retry (move to delayed) ────────────────────────────────────────
+  async retry(
+    queueName: string,
+    jobId: string,
+    claimToken: string,
+    executeAt: number,
+    error?: string
+  ): Promise<boolean> {
+    const now = Date.now();
+    const result = (await this.client.eval(
+      this.retryLua,
+      2,
+      this.processingKey(queueName),
+      this.delayedKey(queueName),
+      this.jobKey(queueName, jobId),
+      jobId,
+      claimToken,
+      now.toString(),
+      executeAt.toString(),
+      error ?? ""
+    )) as number;
+
+    return result === 1;
+  }
+
+  // ── Promote delayed jobs ───────────────────────────────────────────
+  async promoteDelayedJobs(queueName: string, now: number = Date.now()): Promise<number> {
+    return (await this.client.eval(
+      this.promoteDelayedLua,
+      2,
+      this.delayedKey(queueName),
+      this.pendingKey(queueName),
+      this.jobKeyPrefix(queueName),
+      now.toString()
+    )) as number;
+  }
+
+  // ── Recover expired leases ─────────────────────────────────────────
+  async recoverExpiredJobs(queueName: string, now: number): Promise<number> {
+    return (await this.client.eval(
+      this.recoverExpiredLua,
+      2,
+      this.processingKey(queueName),
+      this.pendingKey(queueName),
+      this.jobKeyPrefix(queueName),
+      now.toString()
+    )) as number;
+  }
+
+  // ── Query operations ───────────────────────────────────────────────
+  async getJob(queueName: string, jobId: string): Promise<Job<T> | null> {
+    const data = await this.client.hgetall(this.jobKey(queueName, jobId));
+    return this.parseJobFromRedis(data);
   }
 
   async peek(queueName: string): Promise<Job<T> | null> {
-    const jobId = await this.client.lindex(this.pendingKey(queueName), 0);
+    const jobId = await this.client.lindex(this.pendingKey(queueName), -1);
     if (!jobId) return null;
     return this.getJob(queueName, jobId);
   }
@@ -137,128 +349,65 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
     return (await this.size(queueName)) === 0;
   }
 
-  async scheduleDelayed(queueName: string, job: Job<T>, executeAt: number): Promise<void> {
-    job.updatedAt = Date.now();
-    job.nextAttemptAt = new Date(executeAt);
-
-    await this.client
-      .multi()
-      .hset(
-        this.jobKey(queueName, job.id),
-        "updatedAt",
-        job.updatedAt.toString(),
-        "nextAttemptAt",
-        executeAt.toString()
-      )
-      .zadd(this.delayedKey(queueName), executeAt, job.id)
-      .exec();
+  async getProcessingJobs(queueName: string): Promise<string[]> {
+    return this.client.zrange(this.processingKey(queueName), 0, -1);
   }
 
-  async markProcessing(queueName: string, jobId: string, workerId: string): Promise<void> {
-    const now = Date.now();
-    await this.client.zadd(this.processingKey(queueName), now, jobId);
-    await this.client.hset(
-      this.jobKey(queueName, jobId),
-      "status",
-      "processing",
-      "processingStartedAt",
-      now.toString(),
+  private async emitCapacityFreed(
+    queueName: string,
+    jobId: string,
+    workerId: string,
+    now: number
+  ): Promise<void> {
+    await this.client.xadd(
+      this.capacityEventsKey(queueName),
+      "MAXLEN",
+      "~",
+      1000,
+      "*",
+      "type",
+      "capacity_freed",
+      "queue",
+      queueName,
+      "jobId",
+      jobId,
       "workerId",
       workerId,
-      "updatedAt",
+      "at",
       now.toString()
     );
   }
 
-  async markCompleted(queueName: string, jobId: string): Promise<void> {
-    const now = Date.now();
-    await this.client
-      .multi()
-      .zrem(this.processingKey(queueName), jobId)
-      .hset(
-        this.jobKey(queueName, jobId),
-        "status",
-        "completed",
-        "processingStartedAt",
-        "",
-        "updatedAt",
-        now.toString()
-      )
-      .expire(this.jobKey(queueName, jobId), 86400)
-      .exec();
+  // ── Parsing helpers ────────────────────────────────────────────────
+  private parseJobFromRedis(data: Record<string, string>): Job<T> | null {
+    if (!data || Object.keys(data).length === 0) return null;
+
+    return {
+      id: data["id"],
+      payload: JSON.parse(data["payload"]) as T,
+      attempts: parseInt(data["attempts"], 10),
+      maxAttempts: parseInt(data["maxAttempts"], 10),
+      status: data["status"] as Job<T>["status"],
+      error: data["error"] || null,
+      nextAttemptAt: data["nextAttemptAt"] ? new Date(parseInt(data["nextAttemptAt"], 10)) : null,
+      createdAt: data["createdAt"] ? parseInt(data["createdAt"], 10) : undefined,
+      updatedAt: data["updatedAt"] ? parseInt(data["updatedAt"], 10) : undefined,
+      processingStartedAt: data["processingStartedAt"]
+        ? parseInt(data["processingStartedAt"], 10)
+        : undefined,
+      workerId: data["workerId"] || undefined,
+      claimedAt: data["claimedAt"] ? parseInt(data["claimedAt"], 10) : undefined,
+      leaseUntil: data["leaseUntil"] ? parseInt(data["leaseUntil"], 10) : undefined,
+      claimToken: data["claimToken"] || undefined,
+    };
   }
 
-  async markFailed(queueName: string, jobId: string, error: string = ""): Promise<void> {
-    const now = Date.now();
-    await this.client
-      .multi()
-      .zrem(this.processingKey(queueName), jobId)
-      .hset(
-        this.jobKey(queueName, jobId),
-        "status",
-        "failed",
-        "processingStartedAt",
-        "",
-        "error",
-        error || "",
-        "updatedAt",
-        now.toString()
-      )
-      .exec();
-  }
-
-  async promoteDelayedJobs(queueName: string): Promise<number> {
-    const now = Date.now();
-    return (await this.client.eval(
-      this.promoteDelayedLua,
-      2,
-      this.delayedKey(queueName),
-      this.pendingKey(queueName),
-      `${queueName}:job:`,
-      now
-    )) as number;
-  }
-
-  async recoverStuckJobs(queueName: string, timeoutMs: number): Promise<number> {
-    const now = Date.now();
-    return (await this.client.eval(
-      this.recoverStuckJobsLua,
-      2,
-      this.processingKey(queueName),
-      this.pendingKey(queueName),
-      `${queueName}:job:`,
-      now,
-      timeoutMs
-    )) as number;
-  }
-
-  async updateJob(queueName: string, job: Job<T>): Promise<void> {
-    job.updatedAt = Date.now();
-    await this.client.hset(
-      this.jobKey(queueName, job.id),
-      "payload",
-      JSON.stringify(job.payload),
-      "attempts",
-      job.attempts.toString(),
-      "maxAttempts",
-      job.maxAttempts.toString(),
-      "status",
-      job.status,
-      "nextAttemptAt",
-      job.nextAttemptAt ? job.nextAttemptAt.getTime().toString() : "",
-      "updatedAt",
-      job.updatedAt.toString(),
-      "error",
-      job.error || ""
-    );
-  }
-
-  async getJob(queueName: string, jobId: string): Promise<Job<T> | null> {
-    const data = await this.client.hgetall(this.jobKey(queueName, jobId));
-    return this.parseJobFromRedis(data);
-  }
-
-  async getProcessingJobs(queueName: string): Promise<string[]> {
-    return this.client.zrange(this.processingKey(queueName), 0, -1);
+  private parseJobFromRedisJson(json: string): Job<T> | null {
+    try {
+      const data = JSON.parse(json) as Record<string, string>;
+      return this.parseJobFromRedis(data);
+    } catch {
+      return null;
+    }
   }
 }

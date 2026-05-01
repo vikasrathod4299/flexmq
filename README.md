@@ -13,7 +13,7 @@ It is designed for:
 - retry with exponential backoff
 - configurable backpressure behavior
 - worker concurrency
-- stuck job recovery
+- lease-based recovery for expired claims
 
 ## Packages
 
@@ -93,10 +93,16 @@ main().catch(console.error);
 
 When queue capacity is reached, choose behavior via `backpressureStrategy`:
 
-- `BackpressureStrategy.BLOCK_PRODUCER` (default): wait until space is available
+- `BackpressureStrategy.BLOCK_PRODUCER` (default): wait until pending capacity is available
 - `BackpressureStrategy.DROP_OLDEST`: remove oldest pending job, enqueue new one
 - `BackpressureStrategy.DROP_NEWEST`: reject newest incoming job
 - `BackpressureStrategy.ERROR`: throw immediately
+
+Notes:
+
+- queue capacity currently applies to `pending` jobs only
+- with Redis storage, `BLOCK_PRODUCER` wakes blocked producers across processes using Redis Streams
+- FIFO fairness for blocked producers is preserved within one `Queue` instance, not globally across all processes
 
 Example:
 
@@ -117,6 +123,20 @@ const queue = new Queue("events", {
 - failed jobs are retried with exponential delay
 - once attempts are exhausted, job is marked `failed`
 
+## Delivery semantics
+
+- delivery model is `at-least-once`
+- a job is acknowledged only when storage durably records `processing -> completed`
+- jobs may be delivered more than once after crashes, retries, or lease expiry recovery
+- processors should be idempotent when required by the workload
+
+## Claim and lease model
+
+- workers claim jobs atomically from `pending`
+- a claimed job moves to `processing` and gets `workerId`, `claimedAt`, `leaseUntil`, and `claimToken`
+- only the worker holding the active `claimToken` may `complete`, `fail`, `retry`, or `renewLease`
+- expired claims are recoverable back to `pending`
+
 ---
 
 ## Redis adapter example
@@ -130,7 +150,7 @@ type JobPayload = { taskId: string };
 const storage = new RedisStorageAdapter<JobPayload>({
   host: "127.0.0.1",
   port: 6379,
-  queueName: "tasks",
+  password: process.env.REDIS_PASSWORD,
   capacity: 10000,
 });
 
@@ -152,7 +172,7 @@ Queue emits:
 
 - `queue:connected`
 - `queue:disconnected`
-- `job:added`
+- `job:added` (emits the job object)
 - `job:dropped`
 
 Worker emits:
@@ -163,6 +183,9 @@ Worker emits:
 - `job:completed`
 - `job:retry`
 - `job:failed`
+- `job:lost-claim`
+- `jobs:promoted`
+- `jobs:recovered`
 - `worker:error`
 
 ---

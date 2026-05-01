@@ -46,6 +46,7 @@ describe("End-to-End Integration", () => {
         attemptCount++;
         if (attemptCount < 3) throw new Error("Simulated failure");
       },
+      delayedJobCheckIntervalMs: 10,
     });
 
     await queue.add({ value: 42 }, { maxAttempts: 5 });
@@ -59,22 +60,32 @@ describe("End-to-End Integration", () => {
     await queue.disconnect();
   }, 15000);
 
-  it("should recover stuck jobs on worker restart", async () => {
+  it("should recover stuck jobs via lease expiration", async () => {
     const queue = new Queue<{ id: number }>("recovery-test");
     await queue.connect();
 
-    const job = await queue.add({ id: 1 }, { maxAttempts: 3 });
-
     const storage = queue.getStorage();
-    await storage.dequeue("recovery-test", 0);
+
+    await queue.add({ id: 1 }, { maxAttempts: 3 });
+
+    // Claim the job with a very short lease so it expires quickly
+    const claim = await storage.claim("recovery-test", {
+      workerId: "stuck-worker",
+      leaseMs: 50, // 50ms lease — will expire almost immediately
+      waitTimeoutMs: 0,
+    });
+    expect(claim).not.toBeNull();
 
     const processingJobs = await storage.getProcessingJobs("recovery-test");
-    expect(processingJobs).toContain(job.id);
+    expect(processingJobs).toContain(claim!.job.id);
+
+    // Wait for lease to expire
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     const processedJobs: number[] = [];
     const worker = new Worker<{ id: number }>("recovery-test", {
       concurrency: 1,
-      stuckJobTimeout: 0,
+      recoveryIntervalMs: 100,
       processor: async (job) => {
         processedJobs.push(job.payload.id);
       },

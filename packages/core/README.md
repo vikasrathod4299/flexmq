@@ -2,7 +2,7 @@
 
 A lightweight TypeScript job queue with pluggable storage.
 
-`flexmq` provides `Queue<T>` and `Worker<T>` primitives with retries, backpressure control, delayed retries, and stuck-job recovery.  
+`flexmq` provides `Queue<T>` and `Worker<T>` primitives with retries, backpressure control, delayed retries, and lease-based recovery.  
 It ships with an in-memory adapter and allows custom adapters through `StorageAdapter<T>`.
 
 ## Installation
@@ -61,6 +61,12 @@ Use `backpressureStrategy` in `Queue` options:
 - `BackpressureStrategy.DROP_NEWEST`
 - `BackpressureStrategy.ERROR`
 
+Current semantics:
+
+- queue capacity applies to `pending` jobs only
+- `BLOCK_PRODUCER` waits until pending capacity is available
+- FIFO fairness for blocked producers is per `Queue` instance
+
 Example:
 
 ```ts
@@ -85,13 +91,26 @@ On processor errors:
 - job is retried with exponential backoff
 - after max attempts, job is marked `failed`
 
+## Delivery semantics
+
+- delivery guarantee is `at-least-once`
+- completion is the durable ack boundary
+- duplicate delivery is possible after lease expiry or retry recovery
+
+## Claim and lease model
+
+- jobs move through `pending -> processing -> completed | delayed | failed`
+- claimed jobs carry `workerId`, `claimedAt`, `leaseUntil`, and `claimToken`
+- only the active claim owner may mutate a processing job
+- expired claims are recoverable
+
 ## Events
 
 ### Queue events
 
 - `queue:connected`
 - `queue:disconnected`
-- `job:added`
+- `job:added` (emits the job object)
 - `job:dropped`
 
 ### Worker events
@@ -102,6 +121,9 @@ On processor errors:
 - `job:completed`
 - `job:retry`
 - `job:failed`
+- `job:lost-claim`
+- `jobs:promoted`
+- `jobs:recovered`
 - `worker:error`
 
 ## API surface
