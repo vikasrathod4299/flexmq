@@ -10,6 +10,8 @@ type MockRedisMulti = {
   exec: jest.Mock;
 };
 
+
+
 type MockRedisClient = {
   options: unknown;
   ping: jest.Mock;
@@ -24,6 +26,9 @@ type MockRedisClient = {
   zadd: jest.Mock;
   hset: jest.Mock;
   zrange: jest.Mock;
+  xadd: jest.Mock;
+  xrevrange: jest.Mock;
+  xread: jest.Mock;
   __multi: MockRedisMulti;
 };
 
@@ -52,6 +57,9 @@ const mockCreateRedisClient = (options: unknown): MockRedisClient => {
     zadd: jest.fn().mockResolvedValue(1),
     hset: jest.fn().mockResolvedValue(1),
     zrange: jest.fn().mockResolvedValue([]),
+    xadd: jest.fn().mockResolvedValue("1-0"),
+    xrevrange: jest.fn().mockResolvedValue([]),
+    xread: jest.fn().mockResolvedValue(null),
     __multi: multi,
   };
 
@@ -107,8 +115,8 @@ describe("RedisStorageAdapter", () => {
   };
 
   const getClients = () => {
-    const [client, blockingClient] = mockRedisInstances;
-    return { client, blockingClient };
+    const [client, blockingClient, streamClient] = mockRedisInstances;
+    return { client, blockingClient, streamClient };
   };
 
   beforeEach(() => {
@@ -117,11 +125,11 @@ describe("RedisStorageAdapter", () => {
   });
 
   describe("constructor", () => {
-    it("should create two redis clients with the expected options", () => {
+    it("should create three redis clients with the expected options", () => {
       new RedisStorageAdapter(config);
 
       const RedisMock = Redis as unknown as jest.Mock;
-      expect(RedisMock).toHaveBeenCalledTimes(2);
+      expect(RedisMock).toHaveBeenCalledTimes(3);
       expect(RedisMock).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
@@ -135,17 +143,19 @@ describe("RedisStorageAdapter", () => {
   });
 
   describe("connect / disconnect", () => {
-    it("should connect and disconnect both redis clients", async () => {
+    it("should connect and disconnect all three redis clients", async () => {
       const adapter = new RedisStorageAdapter(config);
-      const { client, blockingClient } = getClients();
+      const { client, blockingClient, streamClient } = getClients();
 
       await adapter.connect();
       await adapter.disconnect();
 
       expect(client.ping).toHaveBeenCalledTimes(1);
       expect(blockingClient.ping).toHaveBeenCalledTimes(1);
+      expect(streamClient.ping).toHaveBeenCalledTimes(1);
       expect(client.quit).toHaveBeenCalledTimes(1);
       expect(blockingClient.quit).toHaveBeenCalledTimes(1);
+      expect(streamClient.quit).toHaveBeenCalledTimes(1);
     });
   });
 
