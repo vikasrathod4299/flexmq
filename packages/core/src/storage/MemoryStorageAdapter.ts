@@ -7,13 +7,18 @@ type ProcessingLease = {
   claimToken: string;
   leaseUntil: number;
   claimedAt: number;
-}
+};
 
 type WaitingClaimer<T> = {
   option: ClaimOptions;
   resolve: (claim: Claim<T> | null) => void;
   timeoutId: NodeJS.Timeout;
-}
+};
+
+type CapacityWaiter = {
+  resolve: (available: boolean) => void;
+  timeoutId: NodeJS.Timeout;
+};
 
 export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
   private pendingQueue: string[] = []; // Job IDs in FIFO order
@@ -21,6 +26,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
   private processingJobs: Map<string, ProcessingLease> = new Map(); // jobId -> startedAt timestamp
   private delayedJobs: Map<string, number> = new Map(); // jobId -> runAt timestamp
   private waitingClaimers: WaitingClaimer<T>[] = [];
+  private waitingCapacity: CapacityWaiter[] = [];
   private capacity: number;
 
   // private waitingConsumers: Array<(job: Job<T> | null) => void> = [];
@@ -39,8 +45,13 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
       waiter.resolve(null);
     }
 
+    for (const waiter of this.waitingCapacity) {
+      waiter.resolve(false);
+    }
+
     // clear all data
-    this.waitingClaimers = []
+    this.waitingClaimers = [];
+    this.waitingCapacity = [];
     this.pendingQueue = [];
     this.jobs.clear();
     this.processingJobs.clear();
@@ -65,7 +76,6 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     job.claimToken = undefined;
     job.error = job.error || null;
 
-
     // If consumers are waiting, deliver the job immediately
     // if (this.waitingConsumers.length > 0) {
     //   this.jobs.set(job.id, job);
@@ -85,7 +95,6 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
 
     // Check capacity
 
-
     // if (this.queue.length >= this.capacity) {
     //   return false;
     // }
@@ -102,18 +111,18 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     const claimed = this.tryClaim(options);
 
     //const now = Date.now();
-    if(claimed) {
+    if (claimed) {
       return claimed;
     }
 
     const waitingTimeoutMs = options.waitTimeoutMs ?? 5000;
-    if(waitingTimeoutMs === 0) {
+    if (waitingTimeoutMs === 0) {
       return null;
     }
 
     return new Promise<Claim<T> | null>((resolve) => {
       const timeoutId = setTimeout(() => {
-        const index = this.waitingClaimers.findIndex(w => w.resolve === resolveWrapped);
+        const index = this.waitingClaimers.findIndex((w) => w.resolve === resolveWrapped);
         if (index !== -1) {
           this.waitingClaimers.splice(index, 1);
         }
@@ -122,8 +131,8 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
 
       const resolveWrapped = (claim: Claim<T> | null) => {
         clearInterval(timeoutId);
-        resolve(claim)
-      }
+        resolve(claim);
+      };
 
       this.waitingClaimers.push({
         option: options,
@@ -172,7 +181,42 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     // });
   }
 
-  async renewLease(queueName: string, jobId: string, claimToken: string, leaseMs: number): Promise<boolean> {
+  async waitForCapacity(_queueName: string, timeoutMs: number): Promise<boolean> {
+    if (this.pendingQueue.length < this.capacity) {
+      return true;
+    }
+
+    if (timeoutMs <= 0) {
+      return false;
+    }
+
+    return new Promise<boolean>((resolve) => {
+      const resolveWrapped = (available: boolean) => {
+        clearTimeout(timeoutId);
+        resolve(available);
+      };
+
+      const timeoutId = setTimeout(() => {
+        const index = this.waitingCapacity.findIndex((waiter) => waiter.resolve === resolveWrapped);
+        if (index !== -1) {
+          this.waitingCapacity.splice(index, 1);
+        }
+        resolve(false);
+      }, timeoutMs);
+
+      this.waitingCapacity.push({
+        resolve: resolveWrapped,
+        timeoutId,
+      });
+    });
+  }
+
+  async renewLease(
+    queueName: string,
+    jobId: string,
+    claimToken: string,
+    leaseMs: number
+  ): Promise<boolean> {
     const lease = this.processingJobs.get(jobId);
     const job = this.jobs.get(jobId);
 
@@ -190,7 +234,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     lease.leaseUntil = leaseUntil;
     job.leaseUntil = leaseUntil;
     job.updatedAt = now;
-    
+
     return true;
   }
 
@@ -213,7 +257,12 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     return true;
   }
 
-  async fail(queueName: string, jobId: string, claimToken: string, error?: string): Promise<boolean> {
+  async fail(
+    queueName: string,
+    jobId: string,
+    claimToken: string,
+    error?: string
+  ): Promise<boolean> {
     const job = this.jobs.get(jobId);
 
     if (!job || !this.hasActiveClaim(jobId, claimToken)) {
@@ -234,14 +283,19 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     return true;
   }
 
-  
-  async retry(queueName: string, jobId: string, claimToken: string, executeAt: number, error?: string): Promise<boolean> {
+  async retry(
+    queueName: string,
+    jobId: string,
+    claimToken: string,
+    executeAt: number,
+    error?: string
+  ): Promise<boolean> {
     const job = this.jobs.get(jobId);
-    
+
     if (!job || !this.hasActiveClaim(jobId, claimToken)) {
       return false;
     }
-    
+
     const now = Date.now();
 
     job.status = "delayed";
@@ -253,8 +307,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     this.processingJobs.delete(jobId);
     this.delayedJobs.set(jobId, executeAt);
 
-  
-    return true
+    return true;
   }
 
   async promoteDelayedJobs(_queueName: string, now: number = Date.now()): Promise<number> {
@@ -292,7 +345,6 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
 
       this.pendingQueue.push(jobId);
       promoted++;
-
     }
     if (promoted > 0) {
       this.drainWaitingClaimers();
@@ -302,7 +354,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
 
   async recoverExpiredJobs(queueName: string, now: number): Promise<number> {
     let recovered = 0;
-    
+
     for (const [jobId, lease] of this.processingJobs) {
       if (lease.leaseUntil > now) {
         continue;
@@ -322,7 +374,6 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
 
       this.pendingQueue.push(jobId);
       recovered++;
-
     }
     if (recovered > 0) {
       this.drainWaitingClaimers();
@@ -361,13 +412,13 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
     while (this.pendingQueue.length > 0) {
       const jobId = this.pendingQueue.shift()!;
       const job = this.jobs.get(jobId);
-      
+
       if (!job) {
         continue;
       }
 
       if (job.status !== "pending") {
-        continue
+        continue;
       }
 
       const now = Date.now();
@@ -377,8 +428,8 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
       job.status = "processing";
       job.attempts = 1;
       job.workerId = options.workerId;
-      job.claimedAt = now
-      job.leaseUntil = leaseUntil
+      job.claimedAt = now;
+      job.leaseUntil = leaseUntil;
       job.claimToken = claimToken;
       job.updatedAt = now;
       job.nextAttemptAt = null;
@@ -388,12 +439,14 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
         claimToken,
         claimedAt: now,
         leaseUntil,
-      })
+      });
+
+      this.notifyCapacityAvailable();
 
       return {
         job,
         claimToken,
-      }
+      };
     }
     return null;
   }
@@ -401,7 +454,7 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
   private hasActiveClaim(jobId: string, claimToken: string): boolean {
     const lease = this.processingJobs.get(jobId);
     if (!lease) {
-      return false
+      return false;
     }
     return lease.claimToken === claimToken;
   }
@@ -425,6 +478,18 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
       this.waitingClaimers.shift();
       clearTimeout(worker.timeoutId);
       worker.resolve(claimed);
+    }
+  }
+
+  private notifyCapacityAvailable(): void {
+    if (this.pendingQueue.length >= this.capacity) {
+      return;
+    }
+
+    const waiters = this.waitingCapacity.splice(0);
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeoutId);
+      waiter.resolve(true);
     }
   }
 
@@ -483,7 +548,6 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
   //   this.processingJobs.delete(jobId);
   // }
 
-  
   // async updateJob(_queueName: string, job: Job<T>): Promise<void> {
   //   job.updatedAt = Date.now();
   //   this.jobs.set(job.id, job);
@@ -493,7 +557,6 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
   //   }
   // }
 
-  
   // async recoverStuckJobs(_queueName: string, timeoutMs: number): Promise<number> {
   //   const now = Date.now();
   //   let recovered = 0;
@@ -519,8 +582,6 @@ export class MemoryStorageAdapter<T> implements StorageAdapter<T> {
   //   }
   //   return recovered;
   // }
-
-  
 
   getStats(): { pending: number; processing: number; delayed: number; total: number } {
     return {

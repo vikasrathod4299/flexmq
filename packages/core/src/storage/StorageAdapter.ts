@@ -22,25 +22,36 @@ export interface StorageAdapter<T> {
   // updateJob(queueName: string, job: Job<T>): Promise<void>;
 
   claim(queueName: string, options: ClaimOptions): Promise<Claim<T> | null>;
-  renewLease(queueName: string, jobId: string, claimToken: string, leaseMs: number): Promise<boolean>;
+  renewLease(
+    queueName: string,
+    jobId: string,
+    claimToken: string,
+    leaseMs: number
+  ): Promise<boolean>;
 
   complete(queueName: string, jobId: string, claimToken: string): Promise<boolean>;
   fail(queueName: string, jobId: string, claimToken: string, error?: string): Promise<boolean>;
 
-  retry(queueName: string, jobId: string, claimToken: string, executeAt: number, error?: string): Promise<boolean>;
+  retry(
+    queueName: string,
+    jobId: string,
+    claimToken: string,
+    executeAt: number,
+    error?: string
+  ): Promise<boolean>;
 
   // Delayed job operations
   promoteDelayedJobs(queueName: string, now?: number): Promise<number>;
   recoverExpiredJobs(queueName: string, now: number): Promise<number>;
 
-
   size(queueName: string): Promise<number>;
   isFull(queueName: string): Promise<boolean>;
+  waitForCapacity(queueName: string, timeoutMs: number): Promise<boolean>;
   isEmpty(queueName: string): Promise<boolean>;
   peek(queueName: string): Promise<Job<T> | null>;
 
   // // Delayed job operations
-  // scheduleDelayed(queueName: string, job: Job<T>, executeAt: number): Promise<void>; // retry() is new 
+  // scheduleDelayed(queueName: string, job: Job<T>, executeAt: number): Promise<void>; // retry() is new
 
   // // Job lifecycle
   // markProcessing(queueName: string, jobId: string, workerId: string): Promise<void>; // claim() is new

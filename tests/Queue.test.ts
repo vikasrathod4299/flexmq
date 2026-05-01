@@ -48,6 +48,7 @@ const createMockStorage = (): jest.Mocked<StorageAdapter<QueuePayload>> => ({
   peek: jest.fn().mockResolvedValue(null),
   size: jest.fn().mockResolvedValue(0),
   isFull: jest.fn().mockResolvedValue(false),
+  waitForCapacity: jest.fn().mockResolvedValue(true),
   isEmpty: jest.fn().mockResolvedValue(true),
   promoteDelayedJobs: jest.fn().mockResolvedValue(0),
   recoverExpiredJobs: jest.fn().mockResolvedValue(0),
@@ -374,7 +375,6 @@ describe("Queue", () => {
       expect(claim?.job.payload.email).toBe("user1@test.com");
 
       await storage.complete("test-queue", claim!.job.id, claim!.claimToken);
-      await internals.drainWaitingProducers();
 
       await expect(waitingJobPromise).resolves.toEqual(
         expect.objectContaining({
@@ -386,65 +386,42 @@ describe("Queue", () => {
 
     it("should reject blocked producers when draining cannot re-enqueue", async () => {
       const storage = createMockStorage();
-      storage.isFull.mockResolvedValue(false);
+      storage.enqueue
+        .mockResolvedValueOnce(false)
+        .mockRejectedValueOnce(new Error("enqueue failed while draining"));
+      storage.waitForCapacity.mockResolvedValue(true);
 
       queue = new Queue("test-queue", {
         storage,
         backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
       });
 
-      const internals = getQueueInternals(queue);
-
-      const waitingJobPromise = new Promise<QueueJob>((resolve, reject) => {
-        internals.waitingProducers.push({
-          payload: { email: "waiting@test.com" },
-          options: { maxAttempts: 4 },
-          resolve,
-          reject,
-        });
-      });
-
-      internals.add = jest
-        .fn()
-        .mockRejectedValue(
-          new Error("enqueue failed while draining")
-        ) as unknown as QueueInternals["add"];
-      await internals.drainWaitingProducers();
+      await queue.connect();
+      const waitingJobPromise = queue.add({ email: "waiting@test.com" }, { maxAttempts: 4 });
 
       await expect(waitingJobPromise).rejects.toThrow("enqueue failed while draining");
     });
 
     it("should wrap non-Error drain failures in an Error instance", async () => {
       const storage = createMockStorage();
-      storage.isFull.mockResolvedValue(false);
+      storage.enqueue.mockResolvedValueOnce(false).mockRejectedValueOnce("string failure");
+      storage.waitForCapacity.mockResolvedValue(true);
 
       queue = new Queue("test-queue", {
         storage,
         backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
       });
 
-      const internals = getQueueInternals(queue);
-
-      const waitingJobPromise = new Promise<QueueJob>((resolve, reject) => {
-        internals.waitingProducers.push({
-          payload: { email: "waiting@test.com" },
-          options: { maxAttempts: 4 },
-          resolve,
-          reject,
-        });
-      });
-
-      internals.add = jest
-        .fn()
-        .mockRejectedValue("string failure") as unknown as QueueInternals["add"];
-      await internals.drainWaitingProducers();
+      await queue.connect();
+      const waitingJobPromise = queue.add({ email: "waiting@test.com" }, { maxAttempts: 4 });
 
       await expect(waitingJobPromise).rejects.toThrow("string failure");
     });
 
     it("should leave waiting producers queued when storage is still full", async () => {
       const storage = createMockStorage();
-      storage.isFull.mockResolvedValue(true);
+      storage.enqueue.mockResolvedValue(false);
+      storage.waitForCapacity.mockResolvedValue(false);
 
       queue = new Queue("test-queue", {
         storage,
@@ -453,16 +430,36 @@ describe("Queue", () => {
 
       const internals = getQueueInternals(queue);
 
-      internals.waitingProducers.push({
-        payload: { email: "waiting@test.com" },
-        options: { maxAttempts: 4 },
-        resolve: jest.fn(),
-        reject: jest.fn(),
-      });
-
-      await internals.drainWaitingProducers();
+      await queue.connect();
+      const blockedAdd = queue.add({ email: "waiting@test.com" }, { maxAttempts: 4 });
+      await Promise.resolve();
 
       expect(internals.waitingProducers).toHaveLength(1);
+
+      await queue.disconnect();
+      await expect(blockedAdd).rejects.toThrow("Queue disconnected while producer was blocked.");
+      queue = undefined as unknown as Queue<QueuePayload>;
+    });
+
+    it("should reject blocked producers when queue disconnects", async () => {
+      const storage = createMockStorage();
+      storage.enqueue.mockResolvedValue(false);
+      storage.waitForCapacity.mockImplementation(() => new Promise<boolean>(() => undefined));
+
+      queue = new Queue("test-queue", {
+        storage,
+        backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
+      });
+
+      await queue.connect();
+      const waitingJobPromise = queue.add({ email: "waiting@test.com" }, { maxAttempts: 4 });
+      await Promise.resolve();
+
+      await queue.disconnect();
+
+      await expect(waitingJobPromise).rejects.toThrow(
+        "Queue disconnected while producer was blocked."
+      );
     });
 
     it("should fall back to the default queue full error for unknown strategies", async () => {

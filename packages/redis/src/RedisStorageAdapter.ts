@@ -8,6 +8,7 @@ import * as fs from "fs";
 export class RedisStorageAdapter<T> implements StorageAdapter<T> {
   private client: Redis;
   private blockingClient: Redis;
+  private streamClient: Redis;
   private config: RedisConfig;
 
   constructor(config: RedisConfig) {
@@ -20,6 +21,7 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
     };
     this.client = new Redis(redisOptions);
     this.blockingClient = new Redis(redisOptions);
+    this.streamClient = new Redis(redisOptions);
   }
 
   // ── Lua scripts ────────────────────────────────────────────────────
@@ -54,6 +56,9 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
   private delayedKey(queueName: string): string {
     return `${queueName}:delayed`;
   }
+  private capacityEventsKey(queueName: string): string {
+    return `${queueName}:capacity-events`;
+  }
   private jobKey(queueName: string, id: string): string {
     return `${queueName}:job:${id}`;
   }
@@ -65,11 +70,13 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
   async connect(): Promise<void> {
     await this.client.ping();
     await this.blockingClient.ping();
+    await this.streamClient.ping();
   }
 
   async disconnect(): Promise<void> {
     await this.client.quit();
     await this.blockingClient.quit();
+    await this.streamClient.quit();
   }
 
   // ── Enqueue ────────────────────────────────────────────────────────
@@ -150,6 +157,8 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
       const job = this.parseJobFromRedis(data);
       if (!job) return null;
 
+      await this.emitCapacityFreed(queueName, jobId, workerId, now);
+
       return { job, claimToken };
     }
 
@@ -172,7 +181,39 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
     const job = this.parseJobFromRedisJson(result);
     if (!job) return null;
 
+    await this.emitCapacityFreed(queueName, job.id, workerId, now);
+
     return { job, claimToken };
+  }
+
+  async waitForCapacity(queueName: string, timeoutMs: number): Promise<boolean> {
+    if (!(await this.isFull(queueName))) {
+      return true;
+    }
+
+    if (timeoutMs <= 0) {
+      return false;
+    }
+
+    const streamKey = this.capacityEventsKey(queueName);
+    const latestEntries = (await this.client.xrevrange(streamKey, "+", "-", "COUNT", 1)) as Array<
+      [string, string[]]
+    >;
+    const lastSeenId = latestEntries[0]?.[0] ?? "$";
+
+    if (!(await this.isFull(queueName))) {
+      return true;
+    }
+
+    const result = (await this.streamClient.xread(
+      "BLOCK",
+      timeoutMs,
+      "STREAMS",
+      streamKey,
+      lastSeenId
+    )) as Array<[string, Array<[string, string[]]>]> | null;
+
+    return result !== null;
   }
 
   // ── Renew lease ────────────────────────────────────────────────────
@@ -310,6 +351,31 @@ export class RedisStorageAdapter<T> implements StorageAdapter<T> {
 
   async getProcessingJobs(queueName: string): Promise<string[]> {
     return this.client.zrange(this.processingKey(queueName), 0, -1);
+  }
+
+  private async emitCapacityFreed(
+    queueName: string,
+    jobId: string,
+    workerId: string,
+    now: number
+  ): Promise<void> {
+    await this.client.xadd(
+      this.capacityEventsKey(queueName),
+      "MAXLEN",
+      "~",
+      1000,
+      "*",
+      "type",
+      "capacity_freed",
+      "queue",
+      queueName,
+      "jobId",
+      jobId,
+      "workerId",
+      workerId,
+      "at",
+      now.toString()
+    );
   }
 
   // ── Parsing helpers ────────────────────────────────────────────────

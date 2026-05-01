@@ -7,7 +7,7 @@
  * Run with: npx jest tests/redis/RedisStorageAdapter.integration.test.ts
  */
 import Redis from "ioredis";
-import { type Job } from "flexmq";
+import { BackpressureStrategy, Queue, type Job } from "flexmq";
 import { RedisStorageAdapter } from "@flexmq/redis";
 
 const REDIS_CONFIG = {
@@ -510,6 +510,50 @@ describe("RedisStorageAdapter Integration", () => {
       // Real owner can still complete
       const realComplete = await adapter.complete(QUEUE, "life-5", claim!.claimToken);
       expect(realComplete).toBe(true);
+    });
+  });
+
+  describe("BLOCK_PRODUCER distributed wake-up", () => {
+    it("should unblock a producer when another process claims a pending job", async () => {
+      const storageA = new RedisStorageAdapter<{ email: string }>(REDIS_CONFIG);
+      const storageB = new RedisStorageAdapter<{ email: string }>(REDIS_CONFIG);
+
+      await storageA.connect();
+      await storageB.connect();
+
+      const producerQueue = new Queue<{ email: string }>(QUEUE, {
+        storage: storageA,
+        capacity: 1,
+        backpressureStrategy: BackpressureStrategy.BLOCK_PRODUCER,
+      });
+
+      try {
+        await producerQueue.connect();
+
+        await producerQueue.add({ email: "first@test.com" }, { maxAttempts: 3 });
+        const blockedAdd = producerQueue.add({ email: "second@test.com" }, { maxAttempts: 5 });
+
+        await Promise.resolve();
+
+        const claimed = await storageB.claim(QUEUE, {
+          workerId: "remote-worker",
+          leaseMs: 30000,
+          waitTimeoutMs: 0,
+        });
+
+        expect(claimed).not.toBeNull();
+        expect(claimed!.job.payload.email).toBe("first@test.com");
+
+        await expect(blockedAdd).resolves.toEqual(
+          expect.objectContaining({
+            payload: { email: "second@test.com" },
+            maxAttempts: 5,
+          })
+        );
+      } finally {
+        await producerQueue.disconnect();
+        await storageB.disconnect();
+      }
     });
   });
 });

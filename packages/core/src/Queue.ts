@@ -21,6 +21,7 @@ export class Queue<T> extends EventEmitter {
   // Locks and flags for backpressure handling
   private enqueueLock: boolean = false;
   private drainingProducers: boolean = false;
+  private producerWaitTimeoutMs: number = 5000;
 
   private waitingProducers: Array<{
     payload: T;
@@ -48,6 +49,12 @@ export class Queue<T> extends EventEmitter {
 
   async disconnect(): Promise<void> {
     if (!this.isConnected) return;
+
+    const waitingProducers = this.waitingProducers.splice(0);
+    for (const waiter of waitingProducers) {
+      waiter.reject(new Error("Queue disconnected while producer was blocked."));
+    }
+
     await this.storage.disconnect();
     this.isConnected = false;
     this.emit("queue:disconnected");
@@ -89,7 +96,7 @@ export class Queue<T> extends EventEmitter {
       }
 
       case BackpressureStrategy.BLOCK_PRODUCER: {
-        return new Promise((resolve, reject) => {
+        const promise = new Promise<Job<T>>((resolve, reject) => {
           this.waitingProducers.push({
             payload: job.payload,
             options: { maxAttempts: job.maxAttempts },
@@ -97,6 +104,10 @@ export class Queue<T> extends EventEmitter {
             reject,
           });
         });
+
+        void this.drainWaitingProducers();
+
+        return promise;
       }
 
       case BackpressureStrategy.ERROR: {
@@ -127,7 +138,7 @@ export class Queue<T> extends EventEmitter {
       const droppedClaim = await this.storage.claim(this.queueName, {
         workerId: "queue:drop-oldest",
         leaseMs: 60000, // long lease to ensure it doesn't get processed by a real worker
-        waitTimeoutMs: 1000 // short wait to avoid blocking too long if claim fails
+        waitTimeoutMs: 1000, // short wait to avoid blocking too long if claim fails
       });
 
       if (!droppedClaim) {
@@ -137,9 +148,9 @@ export class Queue<T> extends EventEmitter {
       }
 
       this.storage.fail(
-        this.queueName, 
-        droppedClaim.job.id, 
-        droppedClaim.claimToken, 
+        this.queueName,
+        droppedClaim.job.id,
+        droppedClaim.claimToken,
         "Dropped: DROP_OLDEST strategy"
       );
       this.emit("job:dropped", { job: droppedClaim.job, reason: "DROP_OLDEST" });
@@ -170,19 +181,50 @@ export class Queue<T> extends EventEmitter {
     this.drainingProducers = true;
 
     try {
-      if (this.waitingProducers.length === 0) return;
-      if (await this.storage.isFull(this.queueName)) return;
+      while (this.waitingProducers.length > 0) {
+        if (!this.isConnected) {
+          return;
+        }
 
-      const waiter = this.waitingProducers.shift()!;
+        const waiter = this.waitingProducers[0];
+        const job: Job<T> = {
+          id: randomUUID(),
+          payload: waiter.payload,
+          attempts: 0,
+          maxAttempts: waiter.options?.maxAttempts ?? 3,
+          status: "pending",
+          nextAttemptAt: null,
+          error: null,
+        };
 
-      try {
-        const job = await this.add(waiter.payload, waiter.options);
-        waiter.resolve(job);
-      } catch (error) {
-        waiter.reject(error instanceof Error ? error : new Error(String(error)));
+        try {
+          const added = await this.storage.enqueue(this.queueName, job);
+          if (added) {
+            this.waitingProducers.shift();
+            this.emit("job:added", job);
+            waiter.resolve(job);
+            continue;
+          }
+
+          const capacityAvailable = await this.storage.waitForCapacity(
+            this.queueName,
+            this.producerWaitTimeoutMs
+          );
+
+          if (!capacityAvailable) {
+            continue;
+          }
+        } catch (error) {
+          this.waitingProducers.shift();
+          waiter.reject(error instanceof Error ? error : new Error(String(error)));
+        }
       }
     } finally {
       this.drainingProducers = false;
+
+      if (this.waitingProducers.length > 0) {
+        void this.drainWaitingProducers();
+      }
     }
   }
 
