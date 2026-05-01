@@ -2,7 +2,7 @@
 
 Redis storage adapter for [`flexmq`](https://www.npmjs.com/package/flexmq).
 
-It provides persistent queue storage, delayed job scheduling, processing recovery, and safe multi-worker coordination using Redis + Lua scripts.
+It provides persistent queue storage, delayed job scheduling, lease-based recovery, and safe multi-worker coordination using Redis + Lua scripts.
 
 ## Installation
 
@@ -27,7 +27,8 @@ type Payload = { message: string };
 const storage = new RedisStorageAdapter<Payload>({
   host: "127.0.0.1",
   port: 6379,
-  queueName: "emails",
+  password: process.env.REDIS_PASSWORD,
+  capacity: 1000,
 });
 
 const queue = new Queue<Payload>("emails", {
@@ -63,24 +64,42 @@ Common fields:
 
 - `host`
 - `port`
-- `queueName`
-- optional auth/db/prefix fields (if needed by your Redis setup)
+- optional `password`
+- `capacity`
+
+Queue name is provided to `Queue` and `Worker`, not to the Redis config.
 
 ## Runtime behavior
 
 - Jobs are stored in Redis hashes.
-- Pending jobs are consumed with blocking pop semantics.
+- Pending jobs are consumed with claim/lease semantics.
 - Delayed jobs are promoted when due.
-- Stuck processing jobs can be recovered and retried.
+- Expired processing leases can be recovered back to pending.
 - Payload is serialized/deserialized safely for object payloads.
+- Processing ownership is enforced with `claimToken` validation.
+- `BLOCK_PRODUCER` wakeups use Redis Streams for cross-process notification.
+
+## Delivery and capacity semantics
+
+- delivery guarantee is `at-least-once`
+- queue capacity currently applies to `pending` jobs only
+- a producer blocked by `BLOCK_PRODUCER` wakes when pending capacity is freed
+- blocked producer fairness is FIFO per queue instance, not global across all processes
 
 ## Production notes
 
-- Use a dedicated Redis DB/key prefix per environment.
+- Use a dedicated Redis DB per environment until prefix support is added.
 - Run multiple workers for horizontal scaling.
 - Monitor retry/failure rates.
 - Ensure clocks are reasonably synchronized across worker machines.
 - Use graceful shutdown in workers to avoid duplicate processing windows.
+
+## Claim lifecycle
+
+- `claim()` atomically moves a job from `pending` to `processing`
+- claimed jobs store `workerId`, `claimedAt`, `leaseUntil`, and `claimToken`
+- `complete()`, `fail()`, `retry()`, and `renewLease()` verify `claimToken`
+- `recoverExpiredJobs()` restores expired claims to `pending`
 
 ## Related packages
 
