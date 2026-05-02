@@ -210,6 +210,22 @@ Worker emits:
 
 ---
 
+## Benchmarking and reliability
+
+- benchmark guide: `docs/BENCHMARKS.md`
+- reliability and stress guide: `docs/RELIABILITY.md`
+
+Included scripts:
+
+```bash
+npm run bench:memory
+npm run bench:redis
+npm run stress:recovery
+npm run stress:block-producer
+```
+
+---
+
 ## Development notes
 
 - TypeScript strict mode enabled
