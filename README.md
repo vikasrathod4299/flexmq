@@ -2,10 +2,11 @@
 
 `flexmq` is a lightweight TypeScript job queue with pluggable storage.
 
-The project is organized as a monorepo with two packages:
+The project is organized as a monorepo with three packages:
 
 - `flexmq` — core queue and worker implementation (in-memory storage included)
 - `@flexmq/redis` — Redis storage adapter for production-style deployments
+- `@flexmq/postgres` — Postgres storage adapter for SQL-backed deployments
 
 It is designed for:
 
@@ -29,6 +30,10 @@ Main primitives:
 ### `@flexmq/redis`
 
 Adds `RedisStorageAdapter<T>` that implements the core `StorageAdapter<T>` contract.
+
+### `@flexmq/postgres`
+
+Adds `PostgresStorageAdapter<T>` that implements the core `StorageAdapter<T>` contract.
 
 ---
 
@@ -173,6 +178,38 @@ const storage = new RedisStorageAdapter<JobPayload>({
   password: process.env.REDIS_PASSWORD,
   capacity: 10000,
 });
+
+const queue = new Queue<JobPayload>("tasks", { storage });
+const worker = new Worker<JobPayload>("tasks", {
+  storage,
+  concurrency: 4,
+  processor: async (job) => {
+    console.log("Processing", job.payload.taskId);
+  },
+});
+```
+
+---
+
+## Postgres adapter example
+
+```ts
+import { Queue, Worker } from "flexmq";
+import { PostgresStorageAdapter } from "@flexmq/postgres";
+
+type JobPayload = { taskId: string };
+
+const storage = new PostgresStorageAdapter<JobPayload>({
+  host: "127.0.0.1",
+  port: 5432,
+  user: "postgres",
+  password: process.env.PGPASSWORD,
+  database: "postgres",
+  capacity: 10000,
+});
+
+await storage.connect();
+await storage.ensureSchema();
 
 const queue = new Queue<JobPayload>("tasks", { storage });
 const worker = new Worker<JobPayload>("tasks", {
