@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 
 type JobRow<T> = {
   queue_name: string;
-  id: string
+  id: string;
   job_id: string;
   payload: unknown;
   status: Job<T>["status"];
@@ -317,14 +317,135 @@ export class PostgresStorageAdapter<T> implements StorageAdapter<T> {
     return result.rowCount === 1;
   }
 
+  async promoteDelayedJobs(queueName: string, now?: number): Promise<number> {
+    const result = await this.pool.query(
+      `
+        UPDATE flexmq_jobs
+        SET status = 'pending',
+            next_attempt_at = NULL,
+            updated_at = $2
+        WHERE queue_name = $1 AND status = 'delayed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= $2
+        `,
+      [queueName, now ? new Date(now) : new Date()]
+    )
+
+    if ((result.rowCount ?? 0) > 0) {
+      await this.pool.query(`NOTIFY flexmq_events, $1`, [queueName]);
+    }
+
+    return result.rowCount ?? 0;
+  }
+
+  async recoverExpiredJobs(queueName: string, now: number): Promise<number> {
+    const result = await this.pool.query(`
+        UPDATE flexmq_jobs
+        SET status = 'pending',
+            updated_at = $2,
+            worker_id = NULL,
+            claimed_at = NULL,
+            lease_until = NULL,
+            claim_token = NULL
+        WHERE queue_name = $1 AND status = 'processing' AND lease_until IS NOT NULL AND lease_until <= $2
+        `, [queueName, new Date(now)]
+    );
+
+    if ((result.rowCount ?? 0) > 0) {
+      await this.pool.query(`NOTIFY flexmq_events, $1`, [queueName]);
+    }
+
+    return result.rowCount ?? 0;
+  }
+
+  async size(queueName: string): Promise<number> {
+    const { rows } = await this.pool.query<{ count: string }>(
+      `
+        SELECT COUNT(*)::text AS count FROM flexmq_jobs WHERE queue_name = $1 AND status = 'pending'
+      `,
+      [queueName]
+    );
+
+    return Number(rows[0]?.count ?? 0)
+
+  }
+
+  async isFull(queueName: string): Promise<boolean> {
+    return (await this.size(queueName)) >= this.config.capacity;
+  }
+
+  async waitForCapacity(queueName: string, timeoutMs: number): Promise<boolean> {
+    if (!(await this.isFull(queueName))) {
+      return true
+    }
+
+    if (timeoutMs <= 0) {
+      return false
+    }
+
+    await this.waitForWakeHint(queueName, timeoutMs);
+    return !(await this.isFull(queueName));
+  }
+
+  async waitForTerminalState(queueName: string, jobId: string, timeoutMs: number): Promise<Job<T> | null> {
+    const current = await this.getJob(queueName, jobId);
+
+    if (!current) {
+      return null;
+    }
+
+    if (this.isTerminamJob(current)) {
+      return current;
+    }
+
+    if (timeoutMs <= 0) {
+      return null;
+    }
+
+    await this.waitForWakeHint(queueName, timeoutMs);
+
+    const updated = await this.getJob(queueName, jobId);
+
+    if (!updated) {
+      return null;
+    }
+
+    return this.isTerminamJob(updated) ? updated : null;
+  }
+
+  async isEmpty(queueName: string): Promise<boolean> {
+    return (await this.size(queueName)) === 0;
+  }
+
+  async peek(queueName: string): Promise<Job<T> | null> {
+    const { rows } = await this.pool.query<JobRow<T>>(
+      `SELECT *
+       FROM flexmq_jobs
+       WHERE queue_name = $1 AND status = 'pending'
+       ORDER BY created_at ASC
+       LIMIT 1`
+      , [queueName]
+    )
+
+    const row = rows[0];
+
+    return row ? this.mapRowToJob(row) : null;
+
+  }
+
+  async getProcessingJobs(queueName: string): Promise<string[]> {
+    const { rows } = await this.pool.query<{ id: string }>(
+      `SELECT id FROM flexmq_jobs WHERE queue_name = $1 AND status = 'processing'
+       ORDER BY lease_until ASC NULLS LAST, created_at ASC`
+      , [queueName]
+    )
+    return rows.map(r => r.id);
+  }
+
   async getJob(queueName: string, jobId: string): Promise<Job<T> | null> {
     const { rows } = await this.pool.query<JobRow<T>>(
       `SELECT * FROM flexmq_jobs WHERE queue_name = $1 AND id = $2`,
       [queueName, jobId]
     )
-
     const row = rows[0];
-
     return row ? this.mapRowToJob(row) : null;
   }
 
