@@ -2,9 +2,12 @@
 
 `flexmq` is a lightweight TypeScript job queue for Node.js with one API across in-memory, Redis, and Postgres backends.
 
-Build background jobs locally with zero infrastructure, then keep the same producer and worker code when you move to Redis or Postgres.
-
 ## Why teams pick flexmq
+The project is organized as a monorepo with three packages:
+
+- `flexmq` — core queue and worker implementation (in-memory storage included)
+- `@flexmq/redis` — Redis storage adapter for production-style deployments
+- `@flexmq/postgres` — Postgres storage adapter for SQL-backed deployments
 
 - One queue API across memory, Redis, and Postgres
 - Built for real background work: retries, backpressure, concurrency, leases, and recovery
@@ -167,6 +170,14 @@ When the queue reaches capacity, choose the behavior that matches your workload:
 - failed jobs retry with exponential delay
 - exhausted jobs move to `failed`
 
+### Claim and lease model
+
+- workers claim jobs atomically from `pending`
+- a claimed job moves to `processing` and gets `workerId`, `claimedAt`, `leaseUntil`, and `claimToken`
+- only the worker holding the active `claimToken` may `complete`, `fail`, `retry`, or `renewLease`
+- expired claims are recoverable back to `pending`
+
+
 ### Waiting for completion
 
 `queue.waitForTerminalState(jobId, timeoutMs)` waits until a job becomes `completed` or `failed`.
@@ -246,6 +257,14 @@ Run tests:
 ```bash
 npm test
 ```
+
+---
+
+## Development notes
+
+- TypeScript strict mode enabled
+- Jest + ts-jest test setup
+- npm workspaces monorepo
 
 Useful commands:
 
