@@ -5,10 +5,9 @@
 ## Why teams pick flexmq
 The project is organized as a monorepo with three packages:
 
-- `flexmq` — core queue and worker implementation (in-memory storage included)
-- `@flexmq/redis` — Redis storage adapter for production-style deployments
-- `@flexmq/postgres` — Postgres storage adapter for SQL-backed deployments
-
+- `flexmq` - core queue and worker implementation (in-memory storage included)
+- `@flexmq/redis` - Redis storage adapter for production-style deployments
+- `@flexmq/postgres` - Postgres storage adapter for SQL-backed deployments
 - One queue API across memory, Redis, and Postgres
 - Built for real background work: retries, backpressure, concurrency, leases, and recovery
 - Good fit for SaaS apps, internal tools, APIs, webhooks, email, and report generation
