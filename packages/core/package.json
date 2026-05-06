@@ -1,7 +1,7 @@
 {
   "name": "flexmq",
   "version": "0.2.1",
-  "description": "Lightweight job queue with pluggable storage - memory or Redis, Postgres. Same  API, swap backends.",
+  "description": "Lightweight TypeScript job queue with one API for memory, Redis, and Postgres backends.",
   "author": "Vikas Rathod",
   "license": "MIT",
   "repository": {
