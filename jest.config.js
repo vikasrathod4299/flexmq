@@ -7,6 +7,7 @@ module.exports = {
   moduleNameMapper: {
     "^flexmq$": "<rootDir>/packages/core/src",
     "^@flexmq/redis$": "<rootDir>/packages/redis/src",
+    "^@flexmq/postgres$": "<rootDir>/packages/postgres/src",
   },
   collectCoverageFrom: ["packages/*/src/**/*.ts", "!packages/*/src/index.ts"],
   coverageDirectory: "coverage",
