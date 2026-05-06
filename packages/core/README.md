@@ -148,11 +148,18 @@ Main exports include:
 
 - In-memory adapter: built in
 - Redis adapter: [`@flexmq/redis`](https://www.npmjs.com/package/@flexmq/redis)
+- Postgres adapter: `@flexmq/postgres`
 
 ### Redis quick install
 
 ```bash
 npm install flexmq @flexmq/redis ioredis
+```
+
+### Postgres quick install
+
+```bash
+npm install flexmq @flexmq/postgres pg
 ```
 
 ## Requirements

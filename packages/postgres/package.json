@@ -1,0 +1,56 @@
+{
+  "name": "@flexmq/postgres",
+  "version": "0.2.1",
+  "description": "Postgres storage adapter for flexmq job queue",
+  "author": "Vikas Rathod",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vikasrathod4299/flexmq.git",
+    "directory": "packages/postgres"
+  },
+  "bugs": {
+    "url": "https://github.com/vikasrathod4299/flexmq/issues"
+  },
+  "homepage": "https://github.com/vikasrathod4299/flexmq#readme",
+  "keywords": [
+    "flexmq",
+    "postgres",
+    "job-queue",
+    "async-queue",
+    "storage-adapter"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist", 
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "pg": "^8.10.0"
+  },
+  "devDependencies": {
+    "pg": "^8.10.0",
+    "@types/pg": "^8.6.0"
+  },
+  "dependencies": {
+    "flexmq": "^0.2.1"
+  }
+}
